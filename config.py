@@ -48,6 +48,10 @@ _DEFAULTS: Dict[str, Any] = {
         # returns instantly.
         "write_tombstones": True,
         "write_tombstones_async": True,
+        # How long a pinned forget preview stays confirmable, in seconds.
+        # Long enough for a human to read the list and answer; short enough
+        # that a stale token can't be confirmed days later.
+        "preview_ttl_s": 3600,
     },
     "anchor_card": {
         "max_tokens": 200,
@@ -144,6 +148,7 @@ _ENV_MAP: Dict[str, List[str]] = {
     "MNEMOSYNE_FORGET_SIG_STALE_DAYS":   ["forget", "signature_stale_days"],
     "MNEMOSYNE_FORGET_WRITE_TOMBSTONES": ["forget", "write_tombstones"],
     "MNEMOSYNE_FORGET_TOMBSTONES_ASYNC": ["forget", "write_tombstones_async"],
+    "MNEMOSYNE_FORGET_PREVIEW_TTL": ["forget", "preview_ttl_s"],
     # Anchor card
     "MNEMOSYNE_ANCHOR_MAX_TOKENS":  ["anchor_card", "max_tokens"],
     "MNEMOSYNE_ANCHOR_FILENAME":   ["anchor_card", "filename"],
