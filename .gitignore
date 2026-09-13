@@ -44,3 +44,15 @@ trace.jsonl*
 # Backup files
 *.bak
 *.before-*
+
+# nix
+result
+result-*
+
+# direnv
+.direnv/
+.envrc.local
+
+# Python tool caches
+.ruff_cache/
+.mypy_cache/
