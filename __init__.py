@@ -86,11 +86,10 @@ from agent.memory_provider import MemoryProvider
 
 from . import config
 from .conflict import is_contradiction, label_pair
-from .fact_store import FactStore, _canonical_key, today_iso
+from .fact_store import FactStore, today_iso
 from .forget import (
     MEMORY_FORGET_SCHEMA,
     forget_by_query,
-    forget_text,
     is_forgotten as _is_forgotten,
     _write_tombstone,
 )
@@ -784,8 +783,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if len(sections) < 3:
             return sections
         anchor, profile, facts = sections[0], sections[1], sections[2]
-        profile_lines = [l for l in profile.splitlines() if l.startswith("- ")]
-        fact_lines = [l for l in facts.splitlines() if l.startswith("- ") or l.startswith("# Facts") is False and l.strip()]
+        profile_lines = [ln for ln in profile.splitlines() if ln.startswith("- ")]
         annotated_facts: List[str] = []
         today = today_iso()
         for fact_line in facts.splitlines():

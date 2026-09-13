@@ -27,12 +27,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import config
-from .fact_store import FactStore, _canonical_key, date_tag, today_iso
+from .text_utils import SPEAKER_STOP, containment, content_tokens
+from .fact_store import FactStore, _canonical_key, today_iso
 
 logger = logging.getLogger(__name__)
 
@@ -94,44 +94,21 @@ def forget_text(
     return entry
 
 
-_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
-_FORGET_STOP = {
-    "the", "a", "an", "is", "are", "was", "were", "of", "in", "on", "at",
-    "to", "from", "by", "for", "with", "and", "or", "but", "this", "that",
-    "и", "в", "на", "не", "что", "это", "как", "по", "из", "к", "у", "о",
-    "от", "за", "со", "до", "для", "при", "без", "то", "же",
-    "user", "пользователь", "user's", "пользователя", "пользователю",
-}
-
-
+# Tokenizer and stoplist live in text_utils now, shared with dedup.py: the
+# signature built here is matched by the read-side filter, so the two sides
+# must normalise identically. Kept under the old private names.
 def _content_tokens(text: str) -> set:
-    return {
-        t.lower() for t in _WORD_RE.findall(text or "")
-        if len(t) > 1 and t.lower() not in _FORGET_STOP
-    }
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    inter = a & b
-    union = a | b
-    return len(inter) / len(union) if union else 0.0
+    return content_tokens(text, SPEAKER_STOP)
 
 
 def _containment(query_tokens: set, cand_tokens: set) -> float:
     """How much of the query is present in the candidate.
 
-    Jaccard punishes long candidates against short queries (a 1-token
-    query matched in a 20-token candidate scores 0.05) — that breaks the
-    forget UX when the agent passes a single concrete keyword like
-    "Barsik". Containment ``|q ∩ c| / |q|`` ignores candidate length and
-    asks the right question: did the query land inside this candidate?
+    Jaccard punishes long candidates against short queries (a 1-token query
+    matched in a 20-token candidate scores 0.05) — that breaks the forget UX
+    when the agent passes a single concrete keyword like "Barsik".
     """
-    if not query_tokens:
-        return 0.0
-    inter = query_tokens & cand_tokens
-    return len(inter) / len(query_tokens)
+    return containment(query_tokens, cand_tokens)
 
 
 def forget_by_query(
