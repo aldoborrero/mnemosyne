@@ -22,8 +22,8 @@ Mnemosyne wraps both behind a single `MemoryProvider` and routes every call to w
 The composite layer also adds:
 
 1. **Date tags** on every retained fact (`fact_store.db`) — so "what did we discuss last week?" actually works.
-2. **Repetition counter** tracking how often a fact comes up — important facts surface higher in recall.
-3. **Explicit forgetting** — `memory_forget` tool + CLI, soft-delete via signature with semantic deduplication so the same fact doesn't sneak back in.
+1. **Repetition counter** tracking how often a fact comes up — important facts surface higher in recall.
+1. **Explicit forgetting** — `memory_forget` tool + CLI, soft-delete via signature with semantic deduplication so the same fact doesn't sneak back in.
 
 ## Status
 
@@ -134,7 +134,7 @@ Your runtime data (`fact_store.db`, `recovery_cursor.json`) is gitignored and su
 Contributions and bug reports are very welcome. Standard GitHub flow:
 
 1. **Issues** — open an issue describing the problem or feature idea.
-2. **Pull requests** — fork, branch, commit, push, open a PR against `main`.
+1. **Pull requests** — fork, branch, commit, push, open a PR against `main`.
 
 Before submitting a PR:
 

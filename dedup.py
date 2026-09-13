@@ -44,23 +44,98 @@ logger = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
 _STOP = {
     # English
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "of", "in", "on", "at", "to", "from", "by", "for", "with", "and",
-    "or", "but", "this", "that", "these", "those", "it", "its", "as",
-    "has", "have", "had", "do", "does", "did", "not", "no",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "from",
+    "by",
+    "for",
+    "with",
+    "and",
+    "or",
+    "but",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "as",
+    "has",
+    "have",
+    "had",
+    "do",
+    "does",
+    "did",
+    "not",
+    "no",
     # Russian
-    "и", "в", "на", "не", "что", "это", "как", "по", "из", "к", "у", "о",
-    "от", "за", "со", "до", "для", "при", "без", "то", "же", "о", "об",
-    "а", "но", "или", "если", "так", "уже", "был", "была", "было", "были",
-    "есть", "его", "её", "их", "там", "тут", "ещё", "ли", "бы",
+    "и",
+    "в",
+    "на",
+    "не",
+    "что",
+    "это",
+    "как",
+    "по",
+    "из",
+    "к",
+    "у",
+    "о",
+    "от",
+    "за",
+    "со",
+    "до",
+    "для",
+    "при",
+    "без",
+    "то",
+    "же",
+    "о",
+    "об",
+    "а",
+    "но",
+    "или",
+    "если",
+    "так",
+    "уже",
+    "был",
+    "была",
+    "было",
+    "были",
+    "есть",
+    "его",
+    "её",
+    "их",
+    "там",
+    "тут",
+    "ещё",
+    "ли",
+    "бы",
     # Common noise in our recall lines
-    "user", "assistant", "пользователь", "ассистент",
+    "user",
+    "assistant",
+    "пользователь",
+    "ассистент",
 }
 
 
 def _content_tokens(text: str) -> set:
     return {
-        t.lower() for t in _WORD_RE.findall(text or "")
+        t.lower()
+        for t in _WORD_RE.findall(text or "")
         if len(t) > 1 and t.lower() not in _STOP
     }
 
@@ -95,12 +170,14 @@ def _fetch_embeddings(texts: List[str], timeout: float) -> Optional[List[List[fl
 
     Returns a list of vectors aligned with `texts`, or None on any error.
     """
-    base = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
-                          "http://localhost:8000/v1")
-    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
-                         "sk-local-litellm")
-    model = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
-                           "jina-embeddings-v5-text-small-retrieval-mlx")
+    base = os.environ.get(
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL", "http://localhost:8000/v1"
+    )
+    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY", "sk-local-litellm")
+    model = os.environ.get(
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+        "jina-embeddings-v5-text-small-retrieval-mlx",
+    )
     url = base.rstrip("/") + "/embeddings"
 
     body = _json.dumps({"model": model, "input": texts}).encode("utf-8")

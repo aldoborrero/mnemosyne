@@ -38,8 +38,11 @@ def _load_import_cursor() -> Dict[str, Any]:
         return {"completed_files": [], "in_progress_file": None, "in_progress_pair": 0}
     try:
         with p.open() as f:
-            return json.load(f) or {"completed_files": [], "in_progress_file": None,
-                                    "in_progress_pair": 0}
+            return json.load(f) or {
+                "completed_files": [],
+                "in_progress_file": None,
+                "in_progress_pair": 0,
+            }
     except Exception:
         return {"completed_files": [], "in_progress_file": None, "in_progress_pair": 0}
 
@@ -88,9 +91,15 @@ def run_import(
     if hindsight_provider is None:
         return {"error": "hindsight unavailable", "imported_pairs": 0}
 
-    days = days if days is not None else int(config.get("import", "default_days", default=90))
-    min_turns = min_turns if min_turns is not None else int(
-        config.get("import", "min_turns", default=5)
+    days = (
+        days
+        if days is not None
+        else int(config.get("import", "default_days", default=90))
+    )
+    min_turns = (
+        min_turns
+        if min_turns is not None
+        else int(config.get("import", "min_turns", default=5))
     )
 
     files = _list_session_files()
@@ -122,8 +131,15 @@ def run_import(
     files_done = 0
 
     if on_progress:
-        on_progress("start", {"files": len(todo), "pairs": total_pairs,
-                               "days": days, "min_turns": min_turns})
+        on_progress(
+            "start",
+            {
+                "files": len(todo),
+                "pairs": total_pairs,
+                "days": days,
+                "min_turns": min_turns,
+            },
+        )
 
     try:
         for f, n in todo:
@@ -138,7 +154,10 @@ def run_import(
 
             for i, (u, a) in enumerate(pairs[start:], start=start):
                 ok = _retain_pair(
-                    hindsight_provider, u, a, iso_date=iso,
+                    hindsight_provider,
+                    u,
+                    a,
+                    iso_date=iso,
                     extra_tags=["bulk_import:true"],
                 )
                 if ok:
@@ -150,10 +169,15 @@ def run_import(
                     cursor["in_progress_pair"] = i + 1
                     _save_import_cursor(cursor)
                     if on_progress:
-                        on_progress("checkpoint", {
-                            "file": f.name, "pairs_done": i + 1, "pairs_total": n,
-                            "imported": imported,
-                        })
+                        on_progress(
+                            "checkpoint",
+                            {
+                                "file": f.name,
+                                "pairs_done": i + 1,
+                                "pairs_total": n,
+                                "imported": imported,
+                            },
+                        )
 
             completed.add(f.name)
             files_done += 1
@@ -162,16 +186,27 @@ def run_import(
             cursor["in_progress_pair"] = 0
             _save_import_cursor(cursor)
             if on_progress:
-                on_progress("file_done", {
-                    "file": f.name, "files_done": files_done,
-                    "files_total": len(todo), "imported": imported,
-                })
+                on_progress(
+                    "file_done",
+                    {
+                        "file": f.name,
+                        "files_done": files_done,
+                        "files_total": len(todo),
+                        "imported": imported,
+                    },
+                )
 
     except KeyboardInterrupt:
         if on_progress:
             on_progress("interrupted", {"imported": imported})
-        return {"imported_pairs": imported, "imported_files": files_done,
-                "interrupted": True}
+        return {
+            "imported_pairs": imported,
+            "imported_files": files_done,
+            "interrupted": True,
+        }
 
-    return {"imported_pairs": imported, "imported_files": files_done,
-            "interrupted": False}
+    return {
+        "imported_pairs": imported,
+        "imported_files": files_done,
+        "interrupted": False,
+    }

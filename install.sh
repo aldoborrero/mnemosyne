@@ -10,9 +10,9 @@ HERMES_VENV="${HERMES_VENV:-$HOME/.hermes/hermes-agent/venv}"
 
 # Friendly OS label (purely cosmetic — both branches do the same thing).
 case "$(uname -s)" in
-  Darwin)  OS_LABEL="macOS" ;;
-  Linux)   OS_LABEL="Linux" ;;
-  *)       OS_LABEL="$(uname -s)" ;;
+Darwin) OS_LABEL="macOS" ;;
+Linux) OS_LABEL="Linux" ;;
+*) OS_LABEL="$(uname -s)" ;;
 esac
 
 echo "Mnemosyne installer ($OS_LABEL)"

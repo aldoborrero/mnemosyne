@@ -87,22 +87,26 @@ def register_cli(subparser) -> None:
     sub.add_parser("status", help="Show mnemosyne status")
 
     p_anchor = sub.add_parser("anchor", help="Manage anchor card")
-    p_anchor.add_argument("anchor_action",
-                          choices=["edit", "list", "add", "remove"])
+    p_anchor.add_argument("anchor_action", choices=["edit", "list", "add", "remove"])
     p_anchor.add_argument("--text", help="Text for add/remove")
 
     p_import = sub.add_parser("import", help="Bulk import past sessions to Hindsight")
     p_import.add_argument("--days", type=int, default=None)
     p_import.add_argument("--min-turns", type=int, default=None)
 
-    p_forget = sub.add_parser("forget", help="Mark memories matching a query as forgotten")
+    p_forget = sub.add_parser(
+        "forget", help="Mark memories matching a query as forgotten"
+    )
     p_forget.add_argument("query")
-    p_forget.add_argument("--yes", action="store_true",
-                          help="Skip interactive confirmation")
+    p_forget.add_argument(
+        "--yes", action="store_true", help="Skip interactive confirmation"
+    )
     p_forget.add_argument("--max-items", type=int, default=20)
 
-    sub.add_parser("honcho-quiet",
-                   help="Switch all Honcho hosts to recallMode=tools (disable noisy auto-inject)")
+    sub.add_parser(
+        "honcho-quiet",
+        help="Switch all Honcho hosts to recallMode=tools (disable noisy auto-inject)",
+    )
 
     subparser.set_defaults(func=mnemosyne_command)
 
@@ -127,14 +131,18 @@ def mnemosyne_command(args) -> int:
 # status
 # ---------------------------------------------------------------------------
 
+
 def _cmd_status() -> int:
     print("Mnemosyne plugin status")
     print(f"  Plugin dir: {config.plugin_dir()}")
-    print(f"  Config:     {config.config_path()} {'(exists)' if config.config_path().exists() else '(default)'}")
+    print(
+        f"  Config:     {config.config_path()} {'(exists)' if config.config_path().exists() else '(default)'}"
+    )
 
     # Inner provider availability
     try:
         from plugins.memory.honcho import HonchoMemoryProvider
+
         h = HonchoMemoryProvider()
         print(f"  Honcho:     available={h.is_available()}")
     except Exception as e:
@@ -142,6 +150,7 @@ def _cmd_status() -> int:
 
     try:
         from plugins.memory.hindsight import HindsightMemoryProvider
+
         i = HindsightMemoryProvider()
         print(f"  Hindsight:  available={i.is_available()}")
     except Exception as e:
@@ -162,6 +171,7 @@ def _cmd_status() -> int:
 # ---------------------------------------------------------------------------
 # anchor card
 # ---------------------------------------------------------------------------
+
 
 def _anchor_path() -> Path:
     fn = config.get("anchor_card", "filename", default="anchor_card.md")
@@ -231,23 +241,33 @@ def _cmd_anchor(args) -> int:
 # import
 # ---------------------------------------------------------------------------
 
+
 def _cmd_import(args) -> int:
     from .importer import run_import
+
     provider = _make_hindsight()
     if provider is None:
-        print("Hindsight is not available — install via `hermes memory setup`.",
-              file=sys.stderr)
+        print(
+            "Hindsight is not available — install via `hermes memory setup`.",
+            file=sys.stderr,
+        )
         return 1
 
     def progress(stage, info):
         if stage == "start":
-            print(f"  → import {info['files']} files, {info['pairs']} turn pairs "
-                  f"(last {info['days']} days, min {info['min_turns']} turns)")
+            print(
+                f"  → import {info['files']} files, {info['pairs']} turn pairs "
+                f"(last {info['days']} days, min {info['min_turns']} turns)"
+            )
         elif stage == "checkpoint":
-            print(f"    {info['file']}: {info['pairs_done']}/{info['pairs_total']} "
-                  f"(total imported: {info['imported']})")
+            print(
+                f"    {info['file']}: {info['pairs_done']}/{info['pairs_total']} "
+                f"(total imported: {info['imported']})"
+            )
         elif stage == "file_done":
-            print(f"    ✓ {info['file']}  files {info['files_done']}/{info['files_total']}")
+            print(
+                f"    ✓ {info['file']}  files {info['files_done']}/{info['files_total']}"
+            )
         elif stage == "interrupted":
             print(f"  Interrupted — imported {info['imported']} pairs so far.")
 
@@ -271,6 +291,7 @@ def _cmd_import(args) -> int:
 # forget
 # ---------------------------------------------------------------------------
 
+
 def _cmd_forget(args) -> int:
     from .fact_store import FactStore
     from .forget import forget_by_query
@@ -285,7 +306,9 @@ def _cmd_forget(args) -> int:
     if not args.yes:
         confirm = _interactive_confirm
     result = forget_by_query(
-        fs, provider, args.query,
+        fs,
+        provider,
+        args.query,
         confirm=confirm,
         max_items=args.max_items,
     )
@@ -301,7 +324,9 @@ def _cmd_forget(args) -> int:
 def _interactive_confirm(candidates):
     print(f"\nFound {len(candidates)} candidate(s) to forget:")
     for i, c in enumerate(candidates, 1):
-        text = c if isinstance(c, str) else (c.get("text") or c.get("content") or str(c))
+        text = (
+            c if isinstance(c, str) else (c.get("text") or c.get("content") or str(c))
+        )
         preview = text.strip().replace("\n", " ")
         if len(preview) > 200:
             preview = preview[:200] + "…"
@@ -325,6 +350,7 @@ def _interactive_confirm(candidates):
 # ---------------------------------------------------------------------------
 # honcho-quiet
 # ---------------------------------------------------------------------------
+
 
 def _cmd_honcho_quiet() -> int:
     """Set recallMode: tools on every Honcho host. Kills noisy auto-inject."""
@@ -367,6 +393,7 @@ def _cmd_honcho_quiet() -> int:
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_hindsight():
     try:
         from plugins.memory.hindsight import HindsightMemoryProvider
@@ -375,11 +402,15 @@ def _make_hindsight():
         return None
     p = HindsightMemoryProvider()
     if not p.is_available():
-        print("Hindsight reports is_available()=False. "
-              "Run `hermes memory setup` and pick hindsight.", file=sys.stderr)
+        print(
+            "Hindsight reports is_available()=False. "
+            "Run `hermes memory setup` and pick hindsight.",
+            file=sys.stderr,
+        )
         return None
     try:
         from hermes_constants import get_hermes_home
+
         hermes_home = str(get_hermes_home())
     except Exception:
         hermes_home = str(Path.home() / ".hermes")

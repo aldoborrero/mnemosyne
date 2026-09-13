@@ -37,7 +37,9 @@ from .fact_store import date_tag
 logger = logging.getLogger(__name__)
 
 # 20260505_091839_e8a4f1d2.jsonl
-_FILENAME_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_[0-9a-f]+\.jsonl$")
+_FILENAME_RE = re.compile(
+    r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_[0-9a-f]+\.jsonl$"
+)
 
 
 def _sessions_dir() -> Path:
@@ -109,7 +111,9 @@ def _iter_turns(jsonl_path: Path) -> Iterator[Tuple[int, Dict[str, Any]]]:
         logger.debug("mnemosyne.recovery: read %s failed: %s", jsonl_path, exc)
 
 
-def _pair_user_assistant(records: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+def _pair_user_assistant(
+    records: List[Dict[str, Any]],
+) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
     """Walk records and emit user→assistant pairs.
     Tool calls and other non-user/non-assistant rows are ignored. The next
     assistant after a user becomes that user's pair; orphaned users without
@@ -213,7 +217,7 @@ def replay_missed(
             max_idx_seen = max(max_idx_seen, idx)
 
         # If this is the cursor file, skip pairs we've already flushed.
-        is_cursor_file = (f.name == last_filename)
+        is_cursor_file = f.name == last_filename
         pairs = _pair_user_assistant(records)
         if is_cursor_file and last_offset > 0:
             pairs = pairs[last_offset:]
@@ -227,8 +231,9 @@ def replay_missed(
                 )
                 _save_cursor(new_cursor)
                 return {"replayed": replayed, "stopped_at_limit": True}
-            ok = _retain_pair(hindsight_provider, u, a, iso_date=iso,
-                              extra_tags=["recovery:true"])
+            ok = _retain_pair(
+                hindsight_provider, u, a, iso_date=iso, extra_tags=["recovery:true"]
+            )
             if ok:
                 replayed += 1
 
