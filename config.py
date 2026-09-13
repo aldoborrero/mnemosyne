@@ -56,6 +56,10 @@ _DEFAULTS: Dict[str, Any] = {
     "recovery": {
         "enabled": True,
         "cursor_filename": "recovery_cursor.json",
+        # Wall-clock budget for startup replay. Each retain is an embedding +
+        # reranker round trip (~5-15s), so an unbounded backlog of 50 pairs
+        # could otherwise hold startup for minutes.
+        "max_seconds": 30.0,
     },
     "import": {
         "default_days": 90,
@@ -149,6 +153,7 @@ _ENV_MAP: Dict[str, List[str]] = {
     "MNEMOSYNE_ANCHOR_FILENAME":   ["anchor_card", "filename"],
     # Recovery
     "MNEMOSYNE_RECOVERY_ENABLED":   ["recovery", "enabled"],
+    "MNEMOSYNE_RECOVERY_MAX_SECONDS": ["recovery", "max_seconds"],
     # Import
     "MNEMOSYNE_IMPORT_DAYS":       ["import", "default_days"],
     "MNEMOSYNE_IMPORT_MIN_TURNS":  ["import", "min_turns"],
