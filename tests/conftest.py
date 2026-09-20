@@ -79,7 +79,8 @@ def make_provider(*, honcho_sleep: float = 0.0, hindsight_sleep: float = 0.0,
     from concurrent.futures import ThreadPoolExecutor
     import threading as _threading
     provider._honcho = _FakeProvider(
-        "honcho", json.dumps({"card": list(honcho_card)}),
+        # Real honcho_profile read returns the card as a list under "result".
+        "honcho", json.dumps({"result": list(honcho_card)}),
         sleep_s=honcho_sleep,
     )
     provider._hindsight = _FakeProvider(

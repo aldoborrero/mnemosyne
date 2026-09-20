@@ -373,10 +373,27 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "mnemosyne"
 
-    def is_available(self) -> bool:
+    def _provider_availability(self) -> tuple[bool, bool]:
         h_ok = bool(self._honcho and self._honcho.is_available())
         i_ok = bool(self._hindsight and self._hindsight.is_available())
-        return h_ok and i_ok
+        return h_ok, i_ok
+
+    def is_available(self) -> bool:
+        # OR, not AND: a Hindsight outage must not disable the working Honcho
+        # half (that would leave the agent with no memory at all). Tool calls to
+        # an absent provider already fail loud and prefetch tolerates one missing.
+        h_ok, i_ok = self._provider_availability()
+        return h_ok or i_ok
+
+    def unavailable_reason(self) -> str:
+        h_ok, i_ok = self._provider_availability()
+        if h_ok or i_ok:
+            return ""
+        parts = [
+            "Honcho " + ("not loaded" if not self._honcho else "unavailable"),
+            "Hindsight " + ("not loaded" if not self._hindsight else "unavailable"),
+        ]
+        return "both inner memory providers down (" + "; ".join(parts) + ")"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -402,6 +419,18 @@ class MnemosyneMemoryProvider(MemoryProvider):
                     self._hindsight.initialize(session_id, **kwargs)
                 except Exception as exc:
                     logger.warning("mnemosyne: Hindsight initialize failed: %s", exc)
+
+            # Name the down half so single-provider operation isn't invisible.
+            h_ok, i_ok = self._provider_availability()
+            if h_ok != i_ok:
+                logger.warning(
+                    "mnemosyne: running DEGRADED — %s available, %s down; "
+                    "continuing with the available provider only",
+                    "Honcho" if h_ok else "Hindsight",
+                    "Hindsight" if h_ok else "Honcho",
+                )
+            elif not h_ok and not i_ok:
+                logger.warning("mnemosyne: both inner providers unavailable at init")
 
             try:
                 self._fact_store = FactStore()
@@ -630,9 +659,11 @@ class MnemosyneMemoryProvider(MemoryProvider):
         try:
             raw = self._honcho.handle_tool_call("honcho_profile", {})
             data = json.loads(raw) if isinstance(raw, str) else raw
-            card = data.get("card") if isinstance(data, dict) else None
-            if isinstance(card, list) and card:
-                text = "\n".join(f"- {item}" for item in card)
+            # A honcho_profile read returns the card as a list under "result";
+            # "card" only appears on a write, so reading it dropped every profile.
+            result = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result, list) and result:
+                text = "\n".join(f"- {item}" for item in result)
             elif isinstance(data, dict) and data.get("hint"):
                 text = f"_{data['hint']}_"
         except Exception as exc:
