@@ -4,6 +4,7 @@ They each used to carry their own copy. The copies drifted, and because a
 forget signature is built by one module and matched by another, the
 containment threshold ended up being scored across two vocabularies.
 """
+
 from __future__ import annotations
 
 from _hermes_user_memory.mnemosyne import conflict, dedup, forget, text_utils

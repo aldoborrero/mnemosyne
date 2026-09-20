@@ -76,7 +76,11 @@ def forget_text(
                 "hindsight_retain",
                 {
                     "content": f"[FORGOTTEN {when}] {text}",
-                    "tags": [f"forgotten:{when}", f"supersedes:{key}", f"reason:{reason}"],
+                    "tags": [
+                        f"forgotten:{when}",
+                        f"supersedes:{key}",
+                        f"reason:{reason}",
+                    ],
                 },
             )
             tombstone_written = True
@@ -193,10 +197,15 @@ def forget_by_query(
             chosen = []
         forgotten = [
             forget_text(fact_store, hindsight_provider, t, reason="forget_by_query")
-            for t in chosen if t
+            for t in chosen
+            if t
         ]
-        return {"forgotten": forgotten, "query": query, "ts": today_iso(),
-                "candidates": [c["text"] for c in candidates]}
+        return {
+            "forgotten": forgotten,
+            "query": query,
+            "ts": today_iso(),
+            "candidates": [c["text"] for c in candidates],
+        }
 
     # Tool-caller path: dry-run unless confirmed=True.
     if not confirmed:
@@ -219,9 +228,15 @@ def forget_by_query(
 
     # Confirmed path — apply selected indices, or all if none given.
     if indices:
-        chosen = [c for c in candidates
-                  if any(i for i in indices if 1 <= int(i) <= len(candidates)
-                         and candidates[int(i) - 1] is c)]
+        chosen = [
+            c
+            for c in candidates
+            if any(
+                i
+                for i in indices
+                if 1 <= int(i) <= len(candidates) and candidates[int(i) - 1] is c
+            )
+        ]
     else:
         chosen = candidates
 
@@ -238,8 +253,9 @@ def forget_by_query(
         try:
             fact_store.mark_forgotten(text)
         except Exception as exc:
-            logger.debug("mnemosyne.forget: mark_forgotten failed for %r: %s",
-                         text[:80], exc)
+            logger.debug(
+                "mnemosyne.forget: mark_forgotten failed for %r: %s", text[:80], exc
+            )
         op_tokens |= _content_tokens(text)
     # Also fold in query tokens so the sig fires on future paraphrases
     # that share the user's intent vocabulary.
@@ -248,8 +264,7 @@ def forget_by_query(
     sig_id = 0
     if op_tokens:
         try:
-            merge = float(config.get("forget", "signature_merge_jaccard",
-                                     default=0.7))
+            merge = float(config.get("forget", "signature_merge_jaccard", default=0.7))
             sig_id = fact_store.add_signature(
                 list(op_tokens),
                 examples=chosen_texts[:5],
@@ -282,6 +297,7 @@ def forget_by_query(
     if write_ts and hindsight_provider is not None and chosen_texts:
         if async_ts:
             from . import _spawn_tombstone_writer  # late import — set in __init__.py
+
             _spawn_tombstone_writer(hindsight_provider, chosen_texts, audit_now)
         else:
             for text in chosen_texts:
@@ -294,9 +310,11 @@ def forget_by_query(
         "ts": audit_now,
         "signature_id": sig_id,
         "tombstones": (
-            "queued" if (write_ts and async_ts) else
-            "written" if write_ts else
-            "skipped"
+            "queued"
+            if (write_ts and async_ts)
+            else "written"
+            if write_ts
+            else "skipped"
         ),
         "note": (
             "Marked as forgotten in the read-side filter — these "
