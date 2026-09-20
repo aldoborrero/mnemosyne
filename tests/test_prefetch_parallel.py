@@ -1,5 +1,6 @@
 """Validates that prefetch() now fans out anchor/peer/hindsight in parallel
 instead of running them serially."""
+
 from __future__ import annotations
 
 import time

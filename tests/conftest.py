@@ -6,6 +6,7 @@ expects to be loaded via the Hermes plugin discovery path. For pytest we
 stub `agent.memory_provider` *before* importing the plugin and then load
 the package directly via importlib so the relative imports inside the
 plugin still resolve."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -62,31 +63,43 @@ class _FakeProvider:
 
     def handle_tool_call(self, name: str, args: Dict[str, Any]):
         import time as _t
+
         self.calls += 1
         if self._sleep_s:
             _t.sleep(self._sleep_s)
         return self._fixed
 
 
-def make_provider(*, honcho_sleep: float = 0.0, hindsight_sleep: float = 0.0,
-                  honcho_card=("alpha", "beta"),
-                  hindsight_text: str = "Fact 1"):
+def make_provider(
+    *,
+    honcho_sleep: float = 0.0,
+    hindsight_sleep: float = 0.0,
+    honcho_card=("alpha", "beta"),
+    hindsight_text: str = "Fact 1",
+):
     """Construct a MnemosyneMemoryProvider with the inner Honcho/Hindsight
     swapped for `_FakeProvider`s with configurable latency. Bypasses the
     real `_load_inner_providers` (which can't run without Hermes installed)."""
-    provider = mnemosyne.MnemosyneMemoryProvider.__new__(mnemosyne.MnemosyneMemoryProvider)
+    provider = mnemosyne.MnemosyneMemoryProvider.__new__(
+        mnemosyne.MnemosyneMemoryProvider
+    )
     # Replicate the bits of __init__ we need.
     from concurrent.futures import ThreadPoolExecutor
     import threading as _threading
+
     provider._honcho = _FakeProvider(
-        "honcho", json.dumps({"card": list(honcho_card)}),
+        "honcho",
+        json.dumps({"card": list(honcho_card)}),
         sleep_s=honcho_sleep,
     )
     provider._hindsight = _FakeProvider(
-        "hindsight", json.dumps({"result": hindsight_text}),
+        "hindsight",
+        json.dumps({"result": hindsight_text}),
         sleep_s=hindsight_sleep,
     )
-    provider._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mnemo-test")
+    provider._executor = ThreadPoolExecutor(
+        max_workers=4, thread_name_prefix="mnemo-test"
+    )
     provider._fact_store = None
     provider._init_lock = _threading.Lock()
     provider._initialized = True

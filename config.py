@@ -102,13 +102,13 @@ _DEFAULTS: Dict[str, Any] = {
     # want to truncate genuine reasoning. Tighten via env if a specific
     # call starts misbehaving.
     "timeouts": {
-        "recall":    180,
+        "recall": 180,
         "reasoning": 240,
-        "reflect":   300,
-        "profile":   60,
-        "conclude":  60,
-        "forget":    180,
-        "default":   120,
+        "reflect": 300,
+        "profile": 60,
+        "conclude": 60,
+        "forget": 180,
+        "default": 120,
     },
 }
 
@@ -119,44 +119,44 @@ _DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 _ENV_MAP: Dict[str, List[str]] = {
     # Timeouts (seconds)
-    "MNEMOSYNE_TIMEOUT_RECALL":     ["timeouts", "recall"],
-    "MNEMOSYNE_TIMEOUT_REASONING":  ["timeouts", "reasoning"],
-    "MNEMOSYNE_TIMEOUT_REFLECT":    ["timeouts", "reflect"],
-    "MNEMOSYNE_TIMEOUT_PROFILE":    ["timeouts", "profile"],
-    "MNEMOSYNE_TIMEOUT_CONCLUDE":   ["timeouts", "conclude"],
-    "MNEMOSYNE_TIMEOUT_FORGET":     ["timeouts", "forget"],
-    "MNEMOSYNE_TIMEOUT_DEFAULT":    ["timeouts", "default"],
+    "MNEMOSYNE_TIMEOUT_RECALL": ["timeouts", "recall"],
+    "MNEMOSYNE_TIMEOUT_REASONING": ["timeouts", "reasoning"],
+    "MNEMOSYNE_TIMEOUT_REFLECT": ["timeouts", "reflect"],
+    "MNEMOSYNE_TIMEOUT_PROFILE": ["timeouts", "profile"],
+    "MNEMOSYNE_TIMEOUT_CONCLUDE": ["timeouts", "conclude"],
+    "MNEMOSYNE_TIMEOUT_FORGET": ["timeouts", "forget"],
+    "MNEMOSYNE_TIMEOUT_DEFAULT": ["timeouts", "default"],
     # Prefetch budgets (tokens)
-    "MNEMOSYNE_PREFETCH_MAX_TOKENS":         ["prefetch", "max_total_tokens"],
-    "MNEMOSYNE_PREFETCH_ANCHOR_TOKENS":      ["prefetch", "anchor_token_budget"],
+    "MNEMOSYNE_PREFETCH_MAX_TOKENS": ["prefetch", "max_total_tokens"],
+    "MNEMOSYNE_PREFETCH_ANCHOR_TOKENS": ["prefetch", "anchor_token_budget"],
     "MNEMOSYNE_PREFETCH_HONCHO_CARD_TOKENS": ["prefetch", "honcho_card_token_budget"],
-    "MNEMOSYNE_PREFETCH_HINDSIGHT_TOKENS":   ["prefetch", "hindsight_token_budget"],
-    "MNEMOSYNE_DEDUP_ENABLED":               ["prefetch", "dedup_enabled"],
-    "MNEMOSYNE_DEDUP_JACCARD_MIN":           ["prefetch", "dedup_jaccard_min"],
-    "MNEMOSYNE_DEDUP_COSINE_MIN":            ["prefetch", "dedup_cosine_min"],
-    "MNEMOSYNE_DEDUP_USE_EMBEDDINGS":        ["prefetch", "dedup_use_embeddings"],
-    "MNEMOSYNE_DEDUP_EMBED_TIMEOUT":         ["prefetch", "dedup_embedding_timeout"],
-    "MNEMOSYNE_STRIP_FROM_EXTRACTION":       ["prefetch", "strip_from_extraction"],
+    "MNEMOSYNE_PREFETCH_HINDSIGHT_TOKENS": ["prefetch", "hindsight_token_budget"],
+    "MNEMOSYNE_DEDUP_ENABLED": ["prefetch", "dedup_enabled"],
+    "MNEMOSYNE_DEDUP_JACCARD_MIN": ["prefetch", "dedup_jaccard_min"],
+    "MNEMOSYNE_DEDUP_COSINE_MIN": ["prefetch", "dedup_cosine_min"],
+    "MNEMOSYNE_DEDUP_USE_EMBEDDINGS": ["prefetch", "dedup_use_embeddings"],
+    "MNEMOSYNE_DEDUP_EMBED_TIMEOUT": ["prefetch", "dedup_embedding_timeout"],
+    "MNEMOSYNE_STRIP_FROM_EXTRACTION": ["prefetch", "strip_from_extraction"],
     # Fact store
-    "MNEMOSYNE_FACT_STRONG_THRESHOLD":   ["fact_store", "strong_signal_threshold"],
-    "MNEMOSYNE_FACT_DUP_SIMILARITY":     ["fact_store", "duplicate_similarity"],
-    "MNEMOSYNE_FACT_USER_EXPLICIT":      ["fact_store", "user_explicit_mention_count"],
+    "MNEMOSYNE_FACT_STRONG_THRESHOLD": ["fact_store", "strong_signal_threshold"],
+    "MNEMOSYNE_FACT_DUP_SIMILARITY": ["fact_store", "duplicate_similarity"],
+    "MNEMOSYNE_FACT_USER_EXPLICIT": ["fact_store", "user_explicit_mention_count"],
     # Forget signatures
-    "MNEMOSYNE_FORGET_SIG_JACCARD_MIN":  ["forget", "signature_jaccard_min"],
-    "MNEMOSYNE_FORGET_SIG_MERGE":        ["forget", "signature_merge_jaccard"],
-    "MNEMOSYNE_FORGET_MAX_SIGS":         ["forget", "max_signatures"],
-    "MNEMOSYNE_FORGET_SIG_STALE_DAYS":   ["forget", "signature_stale_days"],
+    "MNEMOSYNE_FORGET_SIG_JACCARD_MIN": ["forget", "signature_jaccard_min"],
+    "MNEMOSYNE_FORGET_SIG_MERGE": ["forget", "signature_merge_jaccard"],
+    "MNEMOSYNE_FORGET_MAX_SIGS": ["forget", "max_signatures"],
+    "MNEMOSYNE_FORGET_SIG_STALE_DAYS": ["forget", "signature_stale_days"],
     "MNEMOSYNE_FORGET_WRITE_TOMBSTONES": ["forget", "write_tombstones"],
     "MNEMOSYNE_FORGET_TOMBSTONES_ASYNC": ["forget", "write_tombstones_async"],
     # Anchor card
-    "MNEMOSYNE_ANCHOR_MAX_TOKENS":  ["anchor_card", "max_tokens"],
-    "MNEMOSYNE_ANCHOR_FILENAME":   ["anchor_card", "filename"],
+    "MNEMOSYNE_ANCHOR_MAX_TOKENS": ["anchor_card", "max_tokens"],
+    "MNEMOSYNE_ANCHOR_FILENAME": ["anchor_card", "filename"],
     # Recovery
-    "MNEMOSYNE_RECOVERY_ENABLED":   ["recovery", "enabled"],
+    "MNEMOSYNE_RECOVERY_ENABLED": ["recovery", "enabled"],
     "MNEMOSYNE_RECOVERY_MAX_SECONDS": ["recovery", "max_seconds"],
     # Import
-    "MNEMOSYNE_IMPORT_DAYS":       ["import", "default_days"],
-    "MNEMOSYNE_IMPORT_MIN_TURNS":  ["import", "min_turns"],
+    "MNEMOSYNE_IMPORT_DAYS": ["import", "default_days"],
+    "MNEMOSYNE_IMPORT_MIN_TURNS": ["import", "min_turns"],
 }
 
 
@@ -241,8 +241,9 @@ def load() -> Dict[str, Any]:
                 user_cfg = json.load(f) or {}
             cfg = _deep_merge(cfg, user_cfg)
         except Exception as exc:
-            logger.warning("mnemosyne: failed to read %s: %s — using defaults",
-                           path, exc)
+            logger.warning(
+                "mnemosyne: failed to read %s: %s — using defaults", path, exc
+            )
     return _apply_env_overrides(cfg)
 
 
