@@ -13,8 +13,11 @@ Cursor file: ~/.hermes/plugins/mnemosyne/recovery_cursor.json
   "updated_at": "2026-05-05T18:32:01"
 }
 
-`last_offset` is the line number (excluding session_meta) we've already
-flushed — anything with index >= last_offset still needs replay.
+`last_offset` is the number of user→assistant **pairs** in `last_filename`
+that have been durably flushed to Hindsight — replay resumes at that pair.
+It only ever advances over pairs Hindsight actually accepted: a failed
+retain stops the run so the next startup retries from the same place,
+rather than stepping over the gap and losing those turns for good.
 
 First-time initialization sets the cursor to "now" without replaying
 anything: the user goes from "no Hindsight" to "Hindsight live" without
@@ -27,7 +30,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -41,7 +45,11 @@ _FILENAME_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_[0-9a-f
 
 
 def _sessions_dir() -> Path:
-    return Path.home() / ".hermes" / "sessions"
+    # Must go through config._hermes_home(), which honours $HERMES_HOME —
+    # hardcoding ~/.hermes here meant that with a custom HERMES_HOME we wrote
+    # the cursor under the configured home but read transcripts from the
+    # default one, so recovery and bulk import silently saw nothing.
+    return config._hermes_home() / "sessions"
 
 
 def _cursor_path() -> Path:
@@ -73,7 +81,7 @@ def _save_cursor(cursor: Dict[str, Any]) -> None:
     path = _cursor_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     cursor = dict(cursor)
-    cursor["updated_at"] = datetime.utcnow().isoformat()
+    cursor["updated_at"] = datetime.now(timezone.utc).isoformat()
     try:
         tmp = path.with_suffix(".tmp")
         with tmp.open("w") as f:
@@ -171,16 +179,28 @@ def replay_missed(
     hindsight_provider: Any,
     *,
     max_pairs: int = 50,
+    max_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Look for pairs newer than the cursor and resend them to Hindsight.
 
-    Stops after max_pairs to keep startup fast. Subsequent startups pick
-    up from the new cursor."""
+    Bounded three ways, because each retain costs Hindsight an embedding +
+    reranker round trip (~5-15s): `max_pairs`, a wall-clock `max_seconds`
+    budget (default `recovery.max_seconds`), and a hard stop on the first
+    failed retain. Whatever stops it, the cursor is saved at the last pair
+    Hindsight actually accepted, so the next startup resumes exactly there.
+    """
     if hindsight_provider is None:
         return {"replayed": 0, "skipped": "hindsight unavailable"}
 
     if not config.get("recovery", "enabled", default=True):
         return {"replayed": 0, "skipped": "disabled in config"}
+
+    if max_seconds is None:
+        try:
+            max_seconds = float(config.get("recovery", "max_seconds", default=30.0))
+        except Exception:
+            max_seconds = 30.0
+    deadline = time.monotonic() + max_seconds if max_seconds > 0 else None
 
     cursor = _load_cursor()
     last_filename = cursor.get("last_filename")
@@ -203,39 +223,53 @@ def replay_missed(
 
     replayed = 0
     new_cursor = dict(cursor)
+
+    def _stop(fname: str, base: int, flushed: int, reason: str) -> Dict[str, Any]:
+        """Persist the cursor at the last durably flushed pair and bail out."""
+        new_cursor["last_filename"] = fname
+        new_cursor["last_offset"] = base + flushed
+        _save_cursor(new_cursor)
+        return {"replayed": replayed, reason: True}
+
     for f in files[start_idx:]:
         iso = _filename_to_iso_date(f.name) or date_tag().split(":", 1)[1]
 
-        records: List[Dict[str, Any]] = []
-        max_idx_seen = 0
-        for idx, rec in _iter_turns(f):
-            records.append(rec)
-            max_idx_seen = max(max_idx_seen, idx)
+        records = [rec for _, rec in _iter_turns(f)]
 
         # If this is the cursor file, skip pairs we've already flushed.
         is_cursor_file = (f.name == last_filename)
         pairs = _pair_user_assistant(records)
-        if is_cursor_file and last_offset > 0:
-            pairs = pairs[last_offset:]
+        base = last_offset if (is_cursor_file and last_offset > 0) else 0
+        pending = pairs[base:]
 
-        for u, a in pairs:
+        # Pairs from this file confirmed accepted by Hindsight. The cursor
+        # only ever moves by this count — never by len(pending) — so a retain
+        # that failed is retried next startup instead of being skipped.
+        flushed = 0
+        for u, a in pending:
             if replayed >= max_pairs:
-                new_cursor["last_filename"] = f.name
-                # Best-effort offset: number of pairs we got through.
-                new_cursor["last_offset"] = (
-                    last_offset + replayed if is_cursor_file else replayed
-                )
-                _save_cursor(new_cursor)
-                return {"replayed": replayed, "stopped_at_limit": True}
+                return _stop(f.name, base, flushed, "stopped_at_limit")
+            if deadline is not None and time.monotonic() >= deadline:
+                return _stop(f.name, base, flushed, "stopped_at_deadline")
+
             ok = _retain_pair(hindsight_provider, u, a, iso_date=iso,
                               extra_tags=["recovery:true"])
-            if ok:
-                replayed += 1
+            if not ok:
+                # Stop the whole run: advancing past a failure would leave a
+                # permanent hole in the bank, and the next pair will probably
+                # fail too if Hindsight is down.
+                logger.warning(
+                    "mnemosyne.recovery: retain failed in %s at pair %d — "
+                    "stopping, will resume here next startup",
+                    f.name, base + flushed,
+                )
+                return _stop(f.name, base, flushed, "stopped_at_failure")
+
+            replayed += 1
+            flushed += 1
 
         new_cursor["last_filename"] = f.name
-        new_cursor["last_offset"] = (
-            last_offset + len(pairs) if is_cursor_file else len(pairs)
-        )
+        new_cursor["last_offset"] = base + flushed
 
     _save_cursor(new_cursor)
     return {"replayed": replayed, "stopped_at_limit": False}

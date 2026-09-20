@@ -86,11 +86,10 @@ from agent.memory_provider import MemoryProvider
 
 from . import config
 from .conflict import is_contradiction, label_pair
-from .fact_store import FactStore, _canonical_key, today_iso
+from .fact_store import FactStore, today_iso
 from .forget import (
     MEMORY_FORGET_SCHEMA,
     forget_by_query,
-    forget_text,
     is_forgotten as _is_forgotten,
     _write_tombstone,
 )
@@ -427,18 +426,46 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._fact_store = None
 
             # Plan item 7 — recovery from session transcripts.
+            #
+            # Stamping the cursor is instant, so it stays inline. The replay
+            # itself is not: every pair is an embedding + reranker round trip,
+            # so a backlog could hold `_init_lock` — and with it the whole
+            # agent startup — for minutes. It runs on its own daemon thread
+            # instead, where it also can't starve the prefetch pool.
             try:
                 if initialize_cursor_if_missing():
                     logger.info("mnemosyne: recovery cursor stamped at current state")
                 else:
-                    summary = replay_missed(self._hindsight, max_pairs=50)
-                    if summary.get("replayed", 0):
-                        logger.info("mnemosyne: recovery replayed %d turn pair(s)",
-                                    summary["replayed"])
+                    self._spawn_recovery()
             except Exception as exc:
                 logger.debug("mnemosyne: recovery skipped: %s", exc)
 
             self._initialized = True
+
+    def _spawn_recovery(self) -> None:
+        """Replay missed transcript turns in the background."""
+        hindsight = self._hindsight
+        if hindsight is None:
+            return
+
+        def _runner() -> None:
+            try:
+                summary = replay_missed(hindsight, max_pairs=50)
+                if summary.get("replayed", 0):
+                    logger.info("mnemosyne: recovery replayed %d turn pair(s)",
+                                summary["replayed"])
+                for reason in ("stopped_at_failure", "stopped_at_deadline",
+                               "stopped_at_limit"):
+                    if summary.get(reason):
+                        logger.info("mnemosyne: recovery %s — resumes next startup",
+                                    reason)
+                        break
+            except Exception as exc:
+                logger.debug("mnemosyne: recovery failed: %s", exc)
+
+        threading.Thread(
+            target=_runner, name="mnemosyne-recovery", daemon=True
+        ).start()
 
     def shutdown(self) -> None:
         if self._honcho:
@@ -787,8 +814,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if len(sections) < 3:
             return sections
         anchor, profile, facts = sections[0], sections[1], sections[2]
-        profile_lines = [l for l in profile.splitlines() if l.startswith("- ")]
-        fact_lines = [l for l in facts.splitlines() if l.startswith("- ") or l.startswith("# Facts") is False and l.strip()]
+        profile_lines = [ln for ln in profile.splitlines() if ln.startswith("- ")]
         annotated_facts: List[str] = []
         today = today_iso()
         for fact_line in facts.splitlines():
