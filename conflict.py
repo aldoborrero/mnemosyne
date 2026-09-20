@@ -15,29 +15,18 @@ from __future__ import annotations
 import re
 from typing import List, Set, Tuple
 
-# Stop words excluded from topic-overlap scoring (RU + EN basics).
-_STOP = {
-    "и", "в", "на", "не", "что", "это", "как", "по", "из", "к", "у", "о",
-    "от", "за", "со", "до", "для", "над", "под", "при", "без", "то", "же",
-    "ли", "бы", "ну", "вот", "там", "тут", "тоже", "также", "очень", "ещё",
-    "уже", "был", "была", "были", "есть", "нет", "да", "мне", "меня", "мой",
-    "моя", "мои", "ты", "вы", "он", "она", "они", "его", "её", "их",
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "of", "in", "on", "at", "to", "from", "by", "for", "with", "as",
-    "and", "or", "but", "if", "then", "else", "this", "that", "these",
-    "those", "it", "its", "i", "me", "my", "you", "your", "he", "she",
-    "we", "they", "them", "their", "his", "her",
-}
+from .text_utils import PRONOUN_STOP, content_tokens, jaccard
 
 # Treat any token starting with an uppercase letter as a named entity
 # candidate. Crude but works for many cases (names, places, products).
 _ENTITY_RE = re.compile(r"\b[A-ZА-ЯЁ][\w\-]{1,}\b", flags=re.UNICODE)
 _NUMBER_RE = re.compile(r"\b\d[\d,.\:\-/]*\b")
-_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
 
 
 def _tokens(text: str) -> Set[str]:
-    return {t for t in _WORD_RE.findall(text.lower()) if t and t not in _STOP and len(t) > 1}
+    # Pronoun-aware stoplist: this compares a profile line against a fact
+    # line, and both saying "my" is not evidence of a shared topic.
+    return content_tokens(text, PRONOUN_STOP)
 
 
 def _entities(text: str) -> Set[str]:
@@ -50,12 +39,7 @@ def _numbers(text: str) -> Set[str]:
 
 def topic_overlap(a: str, b: str) -> float:
     """Jaccard over content tokens. 0 means disjoint, 1 means identical bag."""
-    ta, tb = _tokens(a), _tokens(b)
-    if not ta or not tb:
-        return 0.0
-    inter = ta & tb
-    union = ta | tb
-    return len(inter) / len(union) if union else 0.0
+    return jaccard(_tokens(a), _tokens(b))
 
 
 def is_contradiction(a: str, b: str, *, topic_threshold: float = 0.3) -> bool:
