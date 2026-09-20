@@ -66,20 +66,11 @@ def _mnemosyne_force_reload(submodule_name: str):
     return mod
 
 
-for _sub in (
-    "config",
-    "conflict",
-    "fact_store",
-    "forget",
-    "recovery",
-    "importer",
-    "dedup",
-):
+for _sub in ("config", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
     try:
         _mnemosyne_force_reload(_sub)
     except Exception as _exc:  # pragma: no cover
         import logging as _logging
-
         _logging.getLogger(__name__).warning(
             "mnemosyne: failed to load submodule %s: %s", _sub, _exc
         )
@@ -95,11 +86,10 @@ from agent.memory_provider import MemoryProvider
 
 from . import config
 from .conflict import is_contradiction, label_pair
-from .fact_store import FactStore, _canonical_key, today_iso
+from .fact_store import FactStore, today_iso
 from .forget import (
     MEMORY_FORGET_SCHEMA,
     forget_by_query,
-    forget_text,
     is_forgotten as _is_forgotten,
     _write_tombstone,
 )
@@ -146,9 +136,7 @@ def _spawn_tombstone_writer(hindsight_provider, texts, when: str) -> None:
                 ok += 1
         logger.info(
             "mnemosyne: tombstones written %d/%d (when=%s)",
-            ok,
-            len(texts),
-            when,
+            ok, len(texts), when,
         )
 
     try:
@@ -215,10 +203,7 @@ _CONCLUDE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "conclusion": {
-                "type": "string",
-                "description": "The conclusion to persist.",
-            },
+            "conclusion": {"type": "string", "description": "The conclusion to persist."},
         },
         "required": ["conclusion"],
     },
@@ -265,11 +250,11 @@ _REFLECT_SCHEMA = {
 
 # Maps curated tool names → (inner_provider_attr, inner_tool_name).
 _TOOL_DISPATCH = {
-    "memory_profile": ("honcho", "honcho_profile"),
-    "memory_reasoning": ("honcho", "honcho_reasoning"),
-    "memory_conclude": ("honcho", "honcho_conclude"),
-    "memory_recall": ("hindsight", "hindsight_recall"),
-    "memory_reflect": ("hindsight", "hindsight_reflect"),
+    "memory_profile":   ("honcho",    "honcho_profile"),
+    "memory_reasoning": ("honcho",    "honcho_reasoning"),
+    "memory_conclude":  ("honcho",    "honcho_conclude"),
+    "memory_recall":    ("hindsight", "hindsight_recall"),
+    "memory_reflect":   ("hindsight", "hindsight_reflect"),
 }
 
 
@@ -312,9 +297,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # 4 workers: 2 for write fan-out (sync_turn), 2 spare for parallel
         # tool calls so agent-driven recall isn't queued behind background
         # retain jobs.
-        self._executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="mnemosyne"
-        )
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mnemosyne")
         self._fact_store: Optional[FactStore] = None
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -330,7 +313,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # file mtime so manual edits are picked up immediately; peer card
         # uses a short TTL and is invalidated on session-switch / write.
         self._anchor_cache: Optional[tuple] = None  # (mtime, rendered_text)
-        self._peer_cache: Optional[tuple] = None  # (expires_at_ts, text)
+        self._peer_cache: Optional[tuple] = None    # (expires_at_ts, text)
         self._peer_cache_ttl_s: float = float(
             config.get("prefetch", "peer_card_ttl_s", default=60.0)
         )
@@ -356,7 +339,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
             "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": "sk-local-litellm",
             "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": "http://localhost:8000/v1",
-            "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": "jina-embeddings-v5-text-small-retrieval-mlx",
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL":
+                "jina-embeddings-v5-text-small-retrieval-mlx",
             "HINDSIGHT_API_RERANKER_PROVIDER": "cohere",
             "HINDSIGHT_API_RERANKER_COHERE_API_KEY": "sk-local-litellm",
             "HINDSIGHT_API_RERANKER_COHERE_BASE_URL": "http://localhost:4000/v1/rerank",
@@ -375,19 +359,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def _load_inner_providers(self) -> None:
         try:
             from plugins.memory.honcho import HonchoMemoryProvider
-
             self._honcho = HonchoMemoryProvider()
         except Exception as exc:
             logger.warning("mnemosyne: failed to load Honcho inner provider: %s", exc)
 
         try:
             from plugins.memory.hindsight import HindsightMemoryProvider
-
             self._hindsight = HindsightMemoryProvider()
         except Exception as exc:
-            logger.warning(
-                "mnemosyne: failed to load Hindsight inner provider: %s", exc
-            )
+            logger.warning("mnemosyne: failed to load Hindsight inner provider: %s", exc)
 
     @property
     def name(self) -> str:
@@ -428,19 +408,17 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 # One-shot vacuum: bound the signatures table so it
                 # never silently grows past the configured ceiling.
                 try:
-                    max_sigs = int(config.get("forget", "max_signatures", default=1000))
-                    stale_days = config.get(
-                        "forget", "signature_stale_days", default=365
-                    )
+                    max_sigs = int(config.get("forget", "max_signatures",
+                                              default=1000))
+                    stale_days = config.get("forget", "signature_stale_days",
+                                            default=365)
                     stale = int(stale_days) if stale_days else None
                     removed = self._fact_store.vacuum_signatures(
-                        max_count=max_sigs,
-                        stale_days=stale,
+                        max_count=max_sigs, stale_days=stale,
                     )
                     if removed:
-                        logger.info(
-                            "mnemosyne: vacuumed %d forget signature(s)", removed
-                        )
+                        logger.info("mnemosyne: vacuumed %d forget signature(s)",
+                                    removed)
                 except Exception as exc:
                     logger.debug("mnemosyne: signature vacuum skipped: %s", exc)
             except Exception as exc:
@@ -448,20 +426,46 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._fact_store = None
 
             # Plan item 7 — recovery from session transcripts.
+            #
+            # Stamping the cursor is instant, so it stays inline. The replay
+            # itself is not: every pair is an embedding + reranker round trip,
+            # so a backlog could hold `_init_lock` — and with it the whole
+            # agent startup — for minutes. It runs on its own daemon thread
+            # instead, where it also can't starve the prefetch pool.
             try:
                 if initialize_cursor_if_missing():
                     logger.info("mnemosyne: recovery cursor stamped at current state")
                 else:
-                    summary = replay_missed(self._hindsight, max_pairs=50)
-                    if summary.get("replayed", 0):
-                        logger.info(
-                            "mnemosyne: recovery replayed %d turn pair(s)",
-                            summary["replayed"],
-                        )
+                    self._spawn_recovery()
             except Exception as exc:
                 logger.debug("mnemosyne: recovery skipped: %s", exc)
 
             self._initialized = True
+
+    def _spawn_recovery(self) -> None:
+        """Replay missed transcript turns in the background."""
+        hindsight = self._hindsight
+        if hindsight is None:
+            return
+
+        def _runner() -> None:
+            try:
+                summary = replay_missed(hindsight, max_pairs=50)
+                if summary.get("replayed", 0):
+                    logger.info("mnemosyne: recovery replayed %d turn pair(s)",
+                                summary["replayed"])
+                for reason in ("stopped_at_failure", "stopped_at_deadline",
+                               "stopped_at_limit"):
+                    if summary.get(reason):
+                        logger.info("mnemosyne: recovery %s — resumes next startup",
+                                    reason)
+                        break
+            except Exception as exc:
+                logger.debug("mnemosyne: recovery failed: %s", exc)
+
+        threading.Thread(
+            target=_runner, name="mnemosyne-recovery", daemon=True
+        ).start()
 
     def shutdown(self) -> None:
         if self._honcho:
@@ -519,12 +523,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         max_total = int(config.get("prefetch", "max_total_tokens", default=4500))
         anchor_budget = int(config.get("prefetch", "anchor_token_budget", default=200))
-        peer_card_budget = int(
-            config.get("prefetch", "honcho_card_token_budget", default=200)
-        )
-        hindsight_budget = int(
-            config.get("prefetch", "hindsight_token_budget", default=4096)
-        )
+        peer_card_budget = int(config.get("prefetch", "honcho_card_token_budget", default=200))
+        hindsight_budget = int(config.get("prefetch", "hindsight_token_budget", default=4096))
         per_branch_timeout = float(
             config.get("prefetch", "parallel_timeout_s", default=12.0)
         )
@@ -537,9 +537,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         anchor_fut = self._executor.submit(self._read_anchor_card)
         peer_fut = self._executor.submit(self._fetch_honcho_peer_card)
         hindsight_fut = self._executor.submit(
-            self._fetch_hindsight_recall,
-            query,
-            hindsight_budget,
+            self._fetch_hindsight_recall, query, hindsight_budget,
         )
 
         def _wait(fut, default=""):
@@ -556,24 +554,18 @@ class MnemosyneMemoryProvider(MemoryProvider):
         sections: List[str] = []
 
         if anchor_text:
-            sections.append(
-                "# Pinned (anchor card)\n"
-                + _truncate_to_chars(anchor_text, anchor_budget * 4)
-            )
+            sections.append("# Pinned (anchor card)\n" +
+                            _truncate_to_chars(anchor_text, anchor_budget * 4))
 
         if peer_card_text:
-            sections.append(
-                "# User profile\n"
-                + _truncate_to_chars(peer_card_text, peer_card_budget * 4)
-            )
+            sections.append("# User profile\n" +
+                            _truncate_to_chars(peer_card_text, peer_card_budget * 4))
 
         if hindsight_text:
             hindsight_text = self._filter_forgotten(hindsight_text)
             if hindsight_text:
-                sections.append(
-                    "# Facts (relevant)\n"
-                    + _truncate_to_chars(hindsight_text, hindsight_budget * 4)
-                )
+                sections.append("# Facts (relevant)\n" +
+                                _truncate_to_chars(hindsight_text, hindsight_budget * 4))
 
         if len(sections) >= 3:
             sections = self._apply_conflict_resolver(sections)
@@ -655,10 +647,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         try:
             raw = self._hindsight.handle_tool_call(
                 "hindsight_recall",
-                {
-                    "query": _truncate_recall_query(query),
-                    "max_tokens": min(max_tokens, 4096),
-                },
+                {"query": _truncate_recall_query(query),
+                 "max_tokens": min(max_tokens, 4096)},
             )
             if isinstance(raw, str):
                 # Try JSON, fall back to plain text
@@ -676,22 +666,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if isinstance(data, str):
             return self._dedupe_recall_text(data)
         if isinstance(data, list):
-            joined = "\n".join(
-                self._extract_text(item) for item in data if self._extract_text(item)
-            )
+            joined = "\n".join(self._extract_text(item) for item in data
+                               if self._extract_text(item))
             return self._dedupe_recall_text(joined)
         if isinstance(data, dict):
             # 'result' is the key the hermes hindsight plugin uses for
             # numbered-list recall output. Check it first.
-            for key in (
-                "result",
-                "memories",
-                "results",
-                "items",
-                "matches",
-                "data",
-                "text",
-            ):
+            for key in ("result", "memories", "results", "items", "matches", "data", "text"):
                 v = data.get(key)
                 if v:
                     return self._format_hindsight_results(v)
@@ -723,7 +704,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             for prefix in range(1, 100):
                 pfx = f"{prefix}. "
                 if content.startswith(pfx):
-                    content = content[len(pfx) :]
+                    content = content[len(pfx):]
                     break
             head, sep, _ = content.partition(" | Involving:")
             content = head if sep else content
@@ -738,7 +719,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if isinstance(item, str):
             return item
         if isinstance(item, dict):
-            return item.get("text") or item.get("content") or item.get("body") or ""
+            return (item.get("text") or item.get("content") or
+                    item.get("body") or "")
         return ""
 
     def _filter_forgotten(self, text: str) -> str:
@@ -766,7 +748,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         except Exception:
             sigs = []
         try:
-            cont_min = float(config.get("forget", "signature_jaccard_min", default=0.5))
+            cont_min = float(config.get("forget", "signature_jaccard_min",
+                                        default=0.5))
         except Exception:
             cont_min = 0.5
 
@@ -778,7 +761,6 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 sig_tokens.append((sig.get("id"), tokens))
 
         from .dedup import _content_tokens
-
         kept: List[str] = []
         sig_hits: set = set()
         for line in text.splitlines():
@@ -829,12 +811,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if len(sections) < 3:
             return sections
         anchor, profile, facts = sections[0], sections[1], sections[2]
-        profile_lines = [l for l in profile.splitlines() if l.startswith("- ")]
-        fact_lines = [
-            l
-            for l in facts.splitlines()
-            if l.startswith("- ") or l.startswith("# Facts") is False and l.strip()
-        ]
+        profile_lines = [ln for ln in profile.splitlines() if ln.startswith("- ")]
         annotated_facts: List[str] = []
         today = today_iso()
         for fact_line in facts.splitlines():
@@ -845,10 +822,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             for profile_line in profile_lines:
                 if is_contradiction(fact_line, profile_line):
                     a, b = label_pair(
-                        fact_line,
-                        {"label": "Hindsight", "when": today},
-                        profile_line,
-                        {"label": "Honcho profile"},
+                        fact_line, {"label": "Hindsight", "when": today},
+                        profile_line, {"label": "Honcho profile"},
                     )
                     annotated_facts.append(a)
                     annotated_facts.append(b)
@@ -862,9 +837,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # Write path (plan items 1, 2, 3, 10)
     # ------------------------------------------------------------------
 
-    def sync_turn(
-        self, user_content: str, assistant_content: str, *, session_id: str = ""
-    ) -> None:
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Bump fact_store on user turn (cheap, exact-key dedup only).
         if self._fact_store and user_content.strip():
             try:
@@ -881,32 +854,24 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
         futures = []
         if self._honcho:
-            futures.append(
-                self._executor.submit(
-                    self._honcho.sync_turn,
-                    user_content,
-                    cleaned_assistant,
-                    session_id=session_id,
-                )
-            )
+            futures.append(self._executor.submit(
+                self._honcho.sync_turn, user_content, cleaned_assistant,
+                session_id=session_id,
+            ))
         if self._hindsight:
-            futures.append(
-                self._executor.submit(
-                    self._hindsight.sync_turn,
-                    user_content,
-                    cleaned_assistant,
-                    session_id=session_id,
-                )
-            )
+            futures.append(self._executor.submit(
+                self._hindsight.sync_turn, user_content, cleaned_assistant,
+                session_id=session_id,
+            ))
         for f in futures:
             try:
                 f.result(timeout=5)
             except Exception as exc:
                 logger.debug("mnemosyne: sync_turn fan-out failure: %s", exc)
 
-    _SHINGLE_SIZE = 8  # words per shingle
-    _SHINGLE_HIT_RATIO = 0.5  # fraction of a paragraph's shingles that must
-    # be in the prefetch to qualify for stripping
+    _SHINGLE_SIZE = 8        # words per shingle
+    _SHINGLE_HIT_RATIO = 0.5 # fraction of a paragraph's shingles that must
+                             # be in the prefetch to qualify for stripping
 
     def _strip_prefetched(self, assistant_content: str) -> str:
         """Drop paragraphs from `assistant_content` that mostly repeat
@@ -943,11 +908,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
             hits = sum(1 for sh in para_shingles if sh in prefetch_shingles)
             ratio = hits / len(para_shingles)
             if ratio >= self._SHINGLE_HIT_RATIO:
-                logger.debug(
-                    "mnemosyne: stripped paraphrased paragraph "
-                    "(%.0f%% shingle overlap with prefetch)",
-                    ratio * 100,
-                )
+                logger.debug("mnemosyne: stripped paraphrased paragraph "
+                             "(%.0f%% shingle overlap with prefetch)",
+                             ratio * 100)
                 continue
             kept_paragraphs.append(para)
         return "\n\n".join(kept_paragraphs)
@@ -959,12 +922,11 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Lowercase + strip non-word characters; same logic as
         # fact_store._canonical_key but token-level so word order matters.
         import re as _re
-
         words = _re.findall(r"\w+", text.lower(), flags=_re.UNICODE)
         if len(words) < cls._SHINGLE_SIZE:
             return set()
         return {
-            tuple(words[i : i + cls._SHINGLE_SIZE])
+            tuple(words[i:i + cls._SHINGLE_SIZE])
             for i in range(len(words) - cls._SHINGLE_SIZE + 1)
         }
 
@@ -1009,10 +971,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                         "hindsight_retain",
                         {
                             "content": f"[FORGOTTEN {today_iso()}] {content}",
-                            "tags": [
-                                f"forgotten:{today_iso()}",
-                                "source:built_in_remove",
-                            ],
+                            "tags": [f"forgotten:{today_iso()}", "source:built_in_remove"],
                         },
                     )
                 except Exception:
@@ -1027,11 +986,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                     pass
             if self._hindsight:
                 try:
-                    tags = [
-                        f"ts:{today_iso()}",
-                        "source:user_explicit",
-                        f"target:{target or 'memory'}",
-                    ]
+                    tags = [f"ts:{today_iso()}", "source:user_explicit",
+                            f"target:{target or 'memory'}"]
                     if action == "replace":
                         tags.append("supersedes:built_in")
                     self._hindsight.handle_tool_call(
@@ -1046,25 +1002,17 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        exposed = config.get(
-            "tools",
-            "expose",
-            default=[
-                "memory_profile",
-                "memory_reasoning",
-                "memory_conclude",
-                "memory_recall",
-                "memory_reflect",
-                "memory_forget",
-            ],
-        )
+        exposed = config.get("tools", "expose", default=[
+            "memory_profile", "memory_reasoning", "memory_conclude",
+            "memory_recall", "memory_reflect", "memory_forget",
+        ])
         catalogue = {
-            "memory_profile": _PROFILE_SCHEMA,
+            "memory_profile":   _PROFILE_SCHEMA,
             "memory_reasoning": _REASONING_SCHEMA,
-            "memory_conclude": _CONCLUDE_SCHEMA,
-            "memory_recall": _RECALL_SCHEMA,
-            "memory_reflect": _REFLECT_SCHEMA,
-            "memory_forget": MEMORY_FORGET_SCHEMA,
+            "memory_conclude":  _CONCLUDE_SCHEMA,
+            "memory_recall":    _RECALL_SCHEMA,
+            "memory_reflect":   _REFLECT_SCHEMA,
+            "memory_forget":    MEMORY_FORGET_SCHEMA,
         }
         return [catalogue[n] for n in exposed if n in catalogue]
 
@@ -1075,24 +1023,20 @@ class MnemosyneMemoryProvider(MemoryProvider):
     @staticmethod
     def _timeout_for(tool_name: str) -> Optional[float]:
         key_map = {
-            "memory_recall": "recall",
+            "memory_recall":    "recall",
             "memory_reasoning": "reasoning",
-            "memory_reflect": "reflect",
-            "memory_profile": "profile",
-            "memory_conclude": "conclude",
-            "memory_forget": "forget",
+            "memory_reflect":   "reflect",
+            "memory_profile":   "profile",
+            "memory_conclude":  "conclude",
+            "memory_forget":    "forget",
         }
         key = key_map.get(tool_name)
         if key is None:
             return None
         try:
-            return float(
-                config.get(
-                    "timeouts",
-                    key,
-                    default=config.get("timeouts", "default", default=120),
-                )
-            )
+            return float(config.get("timeouts", key,
+                                    default=config.get("timeouts", "default",
+                                                       default=120)))
         except Exception:
             return None
 
@@ -1116,12 +1060,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             if isinstance(q, str) and len(q) > _RECALL_QUERY_MAX_CHARS:
                 args = dict(args)
                 args["query"] = _truncate_recall_query(q)
-                logger.debug(
-                    "mnemosyne: truncated %s query from %d to %d chars",
-                    tool_name,
-                    len(q),
-                    len(args["query"]),
-                )
+                logger.debug("mnemosyne: truncated %s query from %d to %d chars",
+                             tool_name, len(q), len(args["query"]))
 
         timeout = self._timeout_for(tool_name)
         if timeout and timeout > 0:
@@ -1133,41 +1073,32 @@ class MnemosyneMemoryProvider(MemoryProvider):
             except FuturesTimeout:
                 logger.warning(
                     "mnemosyne: %s (→ %s) timed out after %.0fs",
-                    tool_name,
-                    inner_name,
-                    timeout,
+                    tool_name, inner_name, timeout,
                 )
-                return json.dumps(
-                    {
-                        "error": f"{tool_name} timed out after {timeout:.0f}s "
-                        f"(inner: {inner_name}). The underlying memory "
-                        f"backend is slow or stuck — try a more focused "
-                        f"query or a different memory tool.",
-                    },
-                    ensure_ascii=False,
-                )
+                return json.dumps({
+                    "error": f"{tool_name} timed out after {timeout:.0f}s "
+                             f"(inner: {inner_name}). The underlying memory "
+                             f"backend is slow or stuck — try a more focused "
+                             f"query or a different memory tool.",
+                }, ensure_ascii=False)
             except Exception as exc:
-                logger.warning(
-                    "mnemosyne: %s (→ %s) raised: %s", tool_name, inner_name, exc
-                )
-                return json.dumps(
-                    {"error": f"{tool_name} failed: {exc}"}, ensure_ascii=False
-                )
+                logger.warning("mnemosyne: %s (→ %s) raised: %s",
+                               tool_name, inner_name, exc)
+                return json.dumps({"error": f"{tool_name} failed: {exc}"},
+                                  ensure_ascii=False)
         else:
             raw = provider.handle_tool_call(inner_name, args, **kwargs)
 
         # Post-process recall: dedup duplicate surface forms and drop forgotten lines.
         if tool_name == "memory_recall":
             try:
-                cleaned = self._format_hindsight_results(
-                    json.loads(raw) if isinstance(raw, str) else raw
-                )
+                cleaned = self._format_hindsight_results(json.loads(raw)
+                                                        if isinstance(raw, str) else raw)
                 cleaned = self._filter_forgotten(cleaned)
                 if cleaned.strip():
                     return json.dumps({"result": cleaned}, ensure_ascii=False)
-                return json.dumps(
-                    {"result": "No relevant memories found."}, ensure_ascii=False
-                )
+                return json.dumps({"result": "No relevant memories found."},
+                                  ensure_ascii=False)
             except Exception as exc:
                 logger.debug("mnemosyne: recall post-process failed: %s", exc)
                 return raw
@@ -1190,9 +1121,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         max_items = int(args.get("max_items") or 30)
 
         result = forget_by_query(
-            self._fact_store,
-            self._hindsight,
-            query,
+            self._fact_store, self._hindsight, query,
             confirmed=confirmed,
             indices=indices,
             max_items=max_items,
@@ -1243,20 +1172,16 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if self._honcho:
             try:
                 self._honcho.on_session_switch(
-                    new_session_id,
-                    parent_session_id=parent_session_id,
-                    reset=reset,
-                    **kwargs,
+                    new_session_id, parent_session_id=parent_session_id,
+                    reset=reset, **kwargs,
                 )
             except Exception:
                 pass
         if self._hindsight:
             try:
                 self._hindsight.on_session_switch(
-                    new_session_id,
-                    parent_session_id=parent_session_id,
-                    reset=reset,
-                    **kwargs,
+                    new_session_id, parent_session_id=parent_session_id,
+                    reset=reset, **kwargs,
                 )
             except Exception:
                 pass
@@ -1279,21 +1204,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 pass
         return "\n\n".join(parts)
 
-    def on_delegation(
-        self, task: str, result: str, *, child_session_id: str = "", **kwargs
-    ) -> None:
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         if self._honcho:
             try:
-                self._honcho.on_delegation(
-                    task, result, child_session_id=child_session_id, **kwargs
-                )
+                self._honcho.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
             except Exception:
                 pass
         if self._hindsight:
             try:
-                self._hindsight.on_delegation(
-                    task, result, child_session_id=child_session_id, **kwargs
-                )
+                self._hindsight.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
             except Exception:
                 pass
 

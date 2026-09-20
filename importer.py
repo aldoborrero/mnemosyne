@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import config
 from .recovery import (
@@ -72,9 +71,14 @@ def _filter_files_by_age(files: List[Path], *, days: int) -> List[Path]:
     return out
 
 
-def _count_pairs(path: Path) -> int:
-    records = [r for _, r in _iter_turns(path)]
-    return len(_pair_user_assistant(records))
+def _read_pairs(path: Path) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Parse one transcript into user→assistant pairs.
+
+    Callers keep the result. This used to be a _count_pairs() that threw the
+    parse away to return a length, so every transcript was read and JSON-parsed
+    twice — once to apply min_turns, once to send it.
+    """
+    return _pair_user_assistant([r for _, r in _iter_turns(path)])
 
 
 def run_import(
@@ -82,7 +86,7 @@ def run_import(
     *,
     days: Optional[int] = None,
     min_turns: Optional[int] = None,
-    on_progress: Optional[callable] = None,
+    on_progress: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Run bulk import. Returns summary dict.
 
@@ -110,15 +114,15 @@ def run_import(
     in_progress_file = cursor.get("in_progress_file")
     in_progress_pair = int(cursor.get("in_progress_pair") or 0)
 
-    todo: List[Tuple[Path, int]] = []
+    todo: List[Tuple[Path, List[Tuple[Dict[str, Any], Dict[str, Any]]]]] = []
     for f in files:
         if f.name in completed:
             continue
-        n = _count_pairs(f)
-        if n < min_turns:
+        pairs = _read_pairs(f)
+        if len(pairs) < min_turns:
             completed.add(f.name)
             continue
-        todo.append((f, n))
+        todo.append((f, pairs))
 
     cursor["completed_files"] = sorted(completed)
     _save_import_cursor(cursor)
@@ -126,7 +130,7 @@ def run_import(
     if not todo:
         return {"imported_pairs": 0, "imported_files": 0, "skipped": "nothing to do"}
 
-    total_pairs = sum(n for _, n in todo)
+    total_pairs = sum(len(pairs) for _, pairs in todo)
     imported = 0
     files_done = 0
 
@@ -142,10 +146,9 @@ def run_import(
         )
 
     try:
-        for f, n in todo:
+        for f, pairs in todo:
             iso = _filename_to_iso_date(f.name) or "unknown"
-            records = [r for _, r in _iter_turns(f)]
-            pairs = _pair_user_assistant(records)
+            n = len(pairs)
 
             start = 0
             if f.name == in_progress_file:

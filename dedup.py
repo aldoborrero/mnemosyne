@@ -30,122 +30,25 @@ from __future__ import annotations
 import logging
 import math
 import os
-import re
 import urllib.error
 import urllib.request
 import json as _json
 from typing import Iterable, List, Optional, Sequence
 
 from . import config
+from .text_utils import SPEAKER_STOP, content_tokens, jaccard
 
 logger = logging.getLogger(__name__)
 
 
-_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
-_STOP = {
-    # English
-    "the",
-    "a",
-    "an",
-    "is",
-    "are",
-    "was",
-    "were",
-    "be",
-    "been",
-    "being",
-    "of",
-    "in",
-    "on",
-    "at",
-    "to",
-    "from",
-    "by",
-    "for",
-    "with",
-    "and",
-    "or",
-    "but",
-    "this",
-    "that",
-    "these",
-    "those",
-    "it",
-    "its",
-    "as",
-    "has",
-    "have",
-    "had",
-    "do",
-    "does",
-    "did",
-    "not",
-    "no",
-    # Russian
-    "и",
-    "в",
-    "на",
-    "не",
-    "что",
-    "это",
-    "как",
-    "по",
-    "из",
-    "к",
-    "у",
-    "о",
-    "от",
-    "за",
-    "со",
-    "до",
-    "для",
-    "при",
-    "без",
-    "то",
-    "же",
-    "о",
-    "об",
-    "а",
-    "но",
-    "или",
-    "если",
-    "так",
-    "уже",
-    "был",
-    "была",
-    "было",
-    "были",
-    "есть",
-    "его",
-    "её",
-    "их",
-    "там",
-    "тут",
-    "ещё",
-    "ли",
-    "бы",
-    # Common noise in our recall lines
-    "user",
-    "assistant",
-    "пользователь",
-    "ассистент",
-}
-
-
+# Tokenizer and stoplist live in text_utils now — this module and forget.py
+# must agree on them, because a forget signature is built by one and matched
+# by the other. Kept under the old private name so callers don't move.
 def _content_tokens(text: str) -> set:
-    return {
-        t.lower()
-        for t in _WORD_RE.findall(text or "")
-        if len(t) > 1 and t.lower() not in _STOP
-    }
+    return content_tokens(text, SPEAKER_STOP)
 
 
-def _jaccard(a: set, b: set) -> float:
-    if not a or not b:
-        return 0.0
-    inter = a & b
-    union = a | b
-    return len(inter) / len(union) if union else 0.0
+_jaccard = jaccard
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -170,14 +73,12 @@ def _fetch_embeddings(texts: List[str], timeout: float) -> Optional[List[List[fl
 
     Returns a list of vectors aligned with `texts`, or None on any error.
     """
-    base = os.environ.get(
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL", "http://localhost:8000/v1"
-    )
-    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY", "sk-local-litellm")
-    model = os.environ.get(
-        "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
-        "jina-embeddings-v5-text-small-retrieval-mlx",
-    )
+    base = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
+                          "http://localhost:8000/v1")
+    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+                         "sk-local-litellm")
+    model = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+                           "jina-embeddings-v5-text-small-retrieval-mlx")
     url = base.rstrip("/") + "/embeddings"
 
     body = _json.dumps({"model": model, "input": texts}).encode("utf-8")
@@ -219,7 +120,7 @@ def cluster_lines(lines: Iterable[str]) -> List[str]:
 
     No-op if dedup is disabled in config or input has ≤1 unique line.
     """
-    items = [l for l in (line.strip() for line in lines) if l]
+    items = [s for s in (line.strip() for line in lines) if s]
     if not items:
         return []
 
@@ -236,8 +137,8 @@ def cluster_lines(lines: Iterable[str]) -> List[str]:
             out.append(it)
         return out
 
-    jac_min = float(config.get("prefetch", "dedup_jaccard_min", default=0.5))
-    cos_min = float(config.get("prefetch", "dedup_cosine_min", default=0.88))
+    jac_min = float(config.get("prefetch", "dedup_jaccard_min", default=0.3))
+    cos_min = float(config.get("prefetch", "dedup_cosine_min", default=0.85))
     use_emb = bool(config.get("prefetch", "dedup_use_embeddings", default=True))
     emb_timeout = float(config.get("prefetch", "dedup_embedding_timeout", default=4.0))
 
