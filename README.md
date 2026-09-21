@@ -94,37 +94,33 @@ Plugin-internal storage:
 
 Both are gitignored — they are local runtime state, not part of the plugin.
 
-## Ingest, scope and backends
+## Approved-writes mode
 
-By default Mnemosyne feeds every conversation turn to both inner providers and keeps one memory per install. Three settings (in `config.json` or the matching env var) tighten that for deployments where memory writes need a human's approval, or where one agent serves several rooms whose members differ.
+For deployments where a human must approve what the agent remembers, set `ingest.mode` to `approved_writes` (or `MNEMOSYNE_INGEST_MODE=approved_writes`) together with `memory.write_approval: true` in Hermes. Mnemosyne then registers a different provider whose backends hold exactly the entries of Hermes' built-in memory files — `MEMORY.md` and `USER.md` under the profile's `memories/` — and nothing else: no conversation turns, session ends, compressions or delegations, and no memory written by a backend's own LLM.
 
-| Setting | Env var | Values | Effect |
+**Why the files, not `on_memory_write`.** Hermes stages a memory write for approval whenever no inline approval prompt is available (always on the gateway), and `/memory approve` later applies it to the files without calling memory providers. The files are therefore the only view of approved memory that every approval path reaches. Each entry gets an id from a hash of its text, and a *reconcile* makes a backend hold exactly the set in the files: new ids are stored, ids no longer in the file are deleted. It runs after `initialize`, after each `on_memory_write`, and at turn start when the files changed. A file that exists — even empty — drives deletions; a file that is missing or unreadable leaves that target's copies untouched (a file that disappears is logged with the purge command), and a backend whose listing fails is skipped for that round. Cron, subagent and flush sessions read but never reconcile.
+
+**Isolation is per profile.** Hermes' built-in memory belongs to the profile and is injected into every session of it, so rooms whose members differ need one Hermes profile each, each with its own backend credentials in its `.env`. Mnemosyne namespaces everything by profile (`sha256(profile:home)[:16]`), but path prefixes and bank names are not a server-enforced boundary: give each profile its own OpenViking user/API key and Hindsight bank credentials.
+
+| Setting | Env var | Default | Effect |
 |---|---|---|---|
-| `ingest.mode` | `MNEMOSYNE_INGEST_MODE` | `turns` (default), `approved_writes` | `approved_writes` stops `sync_turn`, `on_turn_start`, `on_session_end`, `on_pre_compress` and `on_delegation` from reaching the backends, skips startup recovery, makes the importer refuse, hides `memory_conclude`, makes `memory_profile` read-only and refuses to run with Honcho, which uploads MEMORY.md/USER.md/SOUL.md on a new session for its server to derive from. The only ingest path left is `on_memory_write`, which Hermes calls after a built-in `memory` tool write committed — so with `memory.write_approval: true` in Hermes, nothing reaches the backends that a human did not approve. |
-| `scope.mode` | `MNEMOSYNE_SCOPE_MODE` | `none` (default), `chat` | `chat` keys memory by the gateway chat (platform + chat id from Hermes' session identity, never from a tool argument): a Hindsight bank `<bank>-<hash>` and a `fact_store.db` under `scopes/<hash>/` per chat, so what one room stores is never recalled in another. Sessions without a chat id (CLI, cron) get no memory at all, and chat scope refuses to run with Honcho, whose user model spans chats. Recovery, the importer and CLI `forget` are off in this mode. |
-| `backends` | `MNEMOSYNE_BACKENDS` | any of `honcho`, `hindsight`, `openviking`; default `["honcho", "hindsight"]` | Which backends load; tools and availability follow. |
-| `prefetch.enabled` | `MNEMOSYNE_PREFETCH_ENABLED` | `true` (default), `false` | `false` injects nothing per turn; recall happens only when the agent calls `memory_recall`. |
+| `ingest.mode` | `MNEMOSYNE_INGEST_MODE` | `turns` | `approved_writes` selects this mode |
+| `approved.backends` | `MNEMOSYNE_APPROVED_BACKENDS` | `["openviking"]` | any of `openviking`, `hindsight`; anything else (Honcho included) fails closed |
+| `approved.prefetch` | `MNEMOSYNE_APPROVED_PREFETCH` | `false` | inject matching entries every turn (sends the user's message to the backends as a query) |
+| `approved.reflect` | `MNEMOSYNE_APPROVED_REFLECT` | `false` | expose `memory_reflect` (Hindsight, an LLM call the server traces by default) |
+| `hindsight_direct.api_url` | `MNEMOSYNE_HINDSIGHT_URL` / `HINDSIGHT_API_URL` | — | required for the Hindsight backend; the key comes from `HINDSIGHT_API_KEY`; Hindsight Cloud is refused unless `hindsight_direct.allow_cloud` |
 
-Unknown values fall back to the stricter option. Cron and subagent sessions (Hermes' `agent_context`) never write.
+The provider starts without memory and enables itself only at the end of an `initialize` that got the profile's `hermes_home` from Hermes and connected at least one backend; any failure leaves the session without memory rather than with a shared or default store. Tools: `memory_recall` (search the approved entries), `memory_read` (one OpenViking entry by URI), `memory_reflect` (opt-in). `memory_forget`, `memory_conclude`, `memory_profile` and the Honcho tools do not exist in this mode: removal is a `remove` through Hermes' approved `memory` tool.
 
-### OpenViking backend
+Commands: `hermes mnemosyne reconcile` runs a reconcile now; `hermes mnemosyne purge --yes` deletes everything the profile's namespace holds in every backend. `import` and `forget` refuse to run in this mode.
 
-With `openviking` in `backends`, every committed built-in memory write is stored as a plain file at `viking://user/<space>/memories/mnemosyne/<scope>/<target>/mem_<hash>.md`, where `<scope>` is the chat scope hash (or `global`), `<target>` is `memory` or `user` and `<hash>` comes from the content, so the same entry written twice is one file. Hermes names the entry a `replace` or `remove` applies to by a unique substring (`old_text`), so Mnemosyne lists the target directory and deletes the one file containing it; when several do, it deletes none and logs a warning. Writes run in order on a background worker, off the agent's turn. `memory_recall` searches only below that root and returns the files' own text (not the server's generated abstracts) with their URIs, and `memory_read` reads one of those files; results and URIs outside the root are refused.
+### OpenViking
 
-Mnemosyne uses the Hermes OpenViking plugin's HTTP client and connection settings (`OPENVIKING_*`, `hermes memory setup`) but not its provider: that provider uploads every turn and commits sessions — at session end, at startup for pending sessions and from an `atexit` hook — and each commit makes the OpenViking server extract memories with its own LLM. Mnemosyne never calls the session endpoints, so this backend receives approved writes only, whatever `ingest.mode` says. `memory_forget` still needs Hindsight; with OpenViking alone, removing a memory goes through the built-in `memory` tool.
+Mnemosyne uses the Hermes OpenViking plugin's HTTP client and connection settings (`OPENVIKING_*`) but not its provider, which uploads every turn and commits sessions — each commit makes the server extract memories with its own LLM. Entries are plain files at `viking://user/<space>/memories/mnemosyne/<ns>/<target>/mem_<id>.md`, written with `mode=create`, `processing_mode=vectors_only` and `wait=true` (searchable as soon as the write returns). Writes under `memories/` run no LLM on the server; the server does linkify bare `viking://` URIs inside the text. Search is `find` below the root with `read_content`, so recall returns the stored files' text. Do not run a `semantic_and_vectors` reindex over this namespace (it would send the files to the VLM), and consider `memory.extraction_enabled=false` on the server if nothing else of this user needs session extraction.
 
-A locked-down multi-room setup:
+### Hindsight
 
-```json
-{
-  "backends": ["openviking"],
-  "ingest": {"mode": "approved_writes"},
-  "scope": {"mode": "chat"},
-  "prefetch": {"enabled": false}
-}
-```
-
-with `memory.write_approval: true` in the Hermes config; add `"hindsight"` to `backends` for its entity graph and `memory_reflect`. Chat scope re-points Hindsight's resolved bank after its `initialize()` because `bank_id_template` has no chat placeholder; if that bank id cannot be read or set, the session runs without memory rather than with a shared bank.
+Mnemosyne talks to the Hindsight API with `hindsight_client` instead of Hermes' Hindsight provider, which retains through LLM extraction and recalls LLM-consolidated observations only. Each profile gets bank `mnemosyne-<ns>`, configured at connect time with `retain_extraction_mode=chunks` (stored verbatim, no LLM), observations and auto-consolidation off and `store_document_text`; the backend refuses to run unless the server reports that configuration back. Each entry is document `mn-<target>-<id>`, so removal deletes the document and its memory units. Recall asks for `world` facts only. On a shared server set `HINDSIGHT_API_LLM_TRACE_ENABLED=false`: the server otherwise keeps every LLM prompt (reflect queries included) for a day.
 
 ## Tools exposed to the LLM
 
@@ -133,10 +129,11 @@ with `memory.write_approval: true` in the Hermes config; add `"hindsight"` to `b
 | `memory_profile` | Read or update the user's profile card (name, role, communication style, stable preferences). Routes to Honcho. |
 | `memory_reasoning` | Questions *about the user as a person* — style, habits, behavioural patterns, what works best with them. Routes to Honcho. |
 | `memory_conclude` | Record a stable user-related conclusion (preference, habit, style). Routes to Honcho. |
-| `memory_recall` | **The main long-term memory tool.** "Do you remember when…", "we discussed this", multi-strategy semantic + entity-graph search over all past conversations. Searches OpenViking and/or Hindsight, whichever are enabled. |
+| `memory_recall` | **The main long-term memory tool.** "Do you remember when…", "we discussed this", multi-strategy semantic + entity-graph search over all past conversations. Routes to Hindsight. |
 | `memory_reflect` | LLM synthesis across past-conversation facts — summaries spanning multiple sources ("what did we conclude about X?"). Routes to Hindsight. |
 | `memory_forget` | Explicit forgetting via signature soft-delete. Implemented inside the composite layer. |
-| `memory_read` | Full text of one OpenViking memory file by the URI `memory_recall` returned, within the current scope. |
+
+These are the default mode's tools; approved-writes mode has its own set (see above).
 
 ## Hooks
 
