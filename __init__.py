@@ -66,7 +66,7 @@ def _mnemosyne_force_reload(submodule_name: str):
     return mod
 
 
-for _sub in ("config", "policy", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
+for _sub in ("config", "policy", "openviking_store", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
     try:
         _mnemosyne_force_reload(_sub)
     except Exception as _exc:  # pragma: no cover
@@ -93,6 +93,8 @@ from .forget import (
     is_forgotten as _is_forgotten,
     _write_tombstone,
 )
+from .openviking_store import OpenVikingStore
+from .openviking_store import is_configured as _openviking_configured
 from .recovery import initialize_cursor_if_missing, replay_missed
 
 logger = logging.getLogger(__name__)
@@ -230,6 +232,22 @@ _RECALL_SCHEMA = {
     },
 }
 
+_READ_SCHEMA = {
+    "name": "memory_read",
+    "description": (
+        "Read the full text of one memory file by the viking:// URI that "
+        "memory_recall returned. Only URIs from this conversation's memory "
+        "are readable."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "uri": {"type": "string", "description": "viking:// URI from memory_recall."},
+        },
+        "required": ["uri"],
+    },
+}
+
 _REFLECT_SCHEMA = {
     "name": "memory_reflect",
     "description": (
@@ -255,6 +273,7 @@ _TOOL_DISPATCH = {
     "memory_conclude":  ("honcho",    "honcho_conclude"),
     "memory_recall":    ("hindsight", "hindsight_recall"),
     "memory_reflect":   ("hindsight", "hindsight_reflect"),
+    "memory_read":      ("openviking", None),
 }
 
 
@@ -294,6 +313,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
         self._honcho: Optional[MemoryProvider] = None
         self._hindsight: Optional[MemoryProvider] = None
+        # Connected in initialize(), once the scope is known.
+        self._openviking: Optional[OpenVikingStore] = None
         # 4 workers: 2 for write fan-out (sync_turn), 2 spare for parallel
         # tool calls so agent-driven recall isn't queued behind background
         # retain jobs.
@@ -385,7 +406,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if not self._backends:
             return False
         inner = {"honcho": self._honcho, "hindsight": self._hindsight}
-        return all(inner[b] is not None and inner[b].is_available() for b in self._backends)
+        for backend in self._backends:
+            if backend == "openviking":
+                if not _openviking_configured():
+                    return False
+            elif inner[backend] is None or not inner[backend].is_available():
+                return False
+        return True
 
     def _disable(self, reason: str) -> None:
         self._disabled_reason = reason
@@ -467,6 +494,11 @@ class MnemosyneMemoryProvider(MemoryProvider):
             if not self._scope_hindsight_bank():
                 self._initialized = True
                 return
+            if "openviking" in self._backends:
+                slug = policy.scope_slug(self._scope_key) if self._scope_key else None
+                self._openviking = OpenVikingStore.connect(slug)
+                if self._openviking is None:
+                    logger.warning("mnemosyne: OpenViking backend unavailable this session")
 
             try:
                 db_path = (policy.scope_dir(self._scope_key) / "fact_store.db"
@@ -564,6 +596,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                             "**as a person** (style, habits). Slow — use sparingly.",
         "memory_conclude": "`memory_conclude(conclusion)` — record a stable fact about "
                            "the user.",
+        "memory_read": "`memory_read(uri)`            — full text of a memory file "
+                       "whose viking:// URI memory_recall returned.",
         "memory_forget": "`memory_forget(query)`        — TWO STEPS. First call with "
                          "just the query returns a preview list of candidates. Show that "
                          "list to the user verbatim, get explicit confirmation, then "
@@ -623,6 +657,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         hindsight_fut = self._executor.submit(
             self._fetch_hindsight_recall, query, hindsight_budget,
         )
+        viking_fut = self._executor.submit(self._openviking_recall_text, query)
 
         def _wait(fut, default=""):
             try:
@@ -633,7 +668,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
         anchor_text = _wait(anchor_fut)
         peer_card_text = _wait(peer_fut)
-        hindsight_text = _wait(hindsight_fut)
+        hindsight_text = "\n".join(t for t in (_wait(viking_fut), _wait(hindsight_fut)) if t)
 
         sections: List[str] = []
 
@@ -1053,6 +1088,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if not content or not action:
             return
 
+        self._mirror_to_openviking(action, target, content, metadata or {})
+
         if action == "remove":
             if self._fact_store:
                 try:
@@ -1091,6 +1128,52 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 except Exception as exc:
                     logger.warning("mnemosyne: hindsight retain mirror failed: %s", exc)
 
+    def _mirror_to_openviking(self, action: str, target: str, content: str,
+                              metadata: Dict[str, Any]) -> None:
+        store = self._openviking
+        if store is None:
+            return
+        try:
+            if action in ("add", "replace"):
+                store.write(target, content)
+            if action == "replace" and metadata.get("old_text"):
+                store.delete_matching(str(metadata["old_text"]))
+            if action == "remove":
+                store.delete_matching(content)
+        except Exception as exc:
+            logger.warning("mnemosyne: OpenViking %s mirror failed: %s", action, exc)
+
+    def _openviking_recall_text(self, query: str, limit: int = 10) -> str:
+        store = self._openviking
+        if store is None or not query:
+            return ""
+        try:
+            items = store.find(query, limit=limit)
+            lines = []
+            for item in items:
+                # The file itself, not the server's abstract: the file is the approved text.
+                text = store.read(item["uri"]).strip()[:500]
+                if text:
+                    lines.append(f"- {text} ({item['uri']})")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.warning("mnemosyne: OpenViking recall failed: %s", exc)
+            return ""
+
+    def _handle_read(self, args: Dict[str, Any]) -> str:
+        uri = str(args.get("uri") or "").strip()
+        store = self._openviking
+        if store is None:
+            return json.dumps({"error": "openviking not available"})
+        if not store.owns(uri):
+            return json.dumps({"error": "that URI is outside this conversation's memory"})
+        try:
+            return json.dumps({"uri": uri, "content": self._filter_forgotten(store.read(uri))},
+                              ensure_ascii=False)
+        except Exception as exc:
+            logger.warning("mnemosyne: OpenViking read failed: %s", exc)
+            return json.dumps({"error": f"memory_read failed: {exc}"}, ensure_ascii=False)
+
     # ------------------------------------------------------------------
     # Tools (plan item 6 — curated 6 with tightened descriptions)
     # ------------------------------------------------------------------
@@ -1098,7 +1181,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         exposed = config.get("tools", "expose", default=[
             "memory_profile", "memory_reasoning", "memory_conclude",
-            "memory_recall", "memory_reflect", "memory_forget",
+            "memory_recall", "memory_reflect", "memory_forget", "memory_read",
         ])
         catalogue = {
             "memory_profile":   _PROFILE_SCHEMA,
@@ -1107,6 +1190,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "memory_recall":    _RECALL_SCHEMA,
             "memory_reflect":   _REFLECT_SCHEMA,
             "memory_forget":    MEMORY_FORGET_SCHEMA,
+            "memory_read":      _READ_SCHEMA,
         }
         return [catalogue[n] for n in exposed if n in catalogue and self._tool_usable(n)]
 
@@ -1118,6 +1202,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             return False
         if tool_name == "memory_forget":
             return self._hindsight is not None and self._writes_allowed
+        if tool_name == "memory_recall":
+            return self._hindsight is not None or self._openviking is not None
         backend = _TOOL_DISPATCH.get(tool_name, (None,))[0]
         if backend is None or getattr(self, f"_{backend}", None) is None:
             return False
@@ -1138,6 +1224,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "memory_profile":   "profile",
             "memory_conclude":  "conclude",
             "memory_forget":    "forget",
+            "memory_read":      "recall",
         }
         key = key_map.get(tool_name)
         if key is None:
@@ -1160,6 +1247,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
                                         "in this configuration; memory_profile is read-only"})
         if tool_name == "memory_forget":
             return self._handle_forget(args)
+        if tool_name == "memory_read":
+            return self._handle_read(args)
+        if tool_name == "memory_recall" and self._hindsight is None:
+            return self._recall_result(self._openviking_recall_text(str(args.get("query") or "")))
 
         mapping = _TOOL_DISPATCH.get(tool_name)
         if not mapping:
@@ -1211,15 +1302,18 @@ class MnemosyneMemoryProvider(MemoryProvider):
             try:
                 cleaned = self._format_hindsight_results(json.loads(raw)
                                                         if isinstance(raw, str) else raw)
-                cleaned = self._filter_forgotten(cleaned)
-                if cleaned.strip():
-                    return json.dumps({"result": cleaned}, ensure_ascii=False)
-                return json.dumps({"result": "No relevant memories found."},
-                                  ensure_ascii=False)
+                viking = self._openviking_recall_text(str(args.get("query") or ""))
+                return self._recall_result("\n".join(t for t in (viking, cleaned) if t))
             except Exception as exc:
                 logger.debug("mnemosyne: recall post-process failed: %s", exc)
                 return raw
         return raw
+
+    def _recall_result(self, text: str) -> str:
+        cleaned = self._filter_forgotten(text) if text else ""
+        if cleaned.strip():
+            return json.dumps({"result": cleaned}, ensure_ascii=False)
+        return json.dumps({"result": "No relevant memories found."}, ensure_ascii=False)
 
     def _handle_forget(self, args: Dict[str, Any]) -> str:
         query = (args.get("query") or "").strip()

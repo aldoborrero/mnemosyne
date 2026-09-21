@@ -30,11 +30,11 @@ INGEST_TURNS = "turns"
 INGEST_APPROVED_WRITES = "approved_writes"
 SCOPE_NONE = "none"
 SCOPE_CHAT = "chat"
-KNOWN_BACKENDS = ("honcho", "hindsight")
+KNOWN_BACKENDS = ("honcho", "hindsight", "openviking")
 
 # Backends whose data can be partitioned per chat. Honcho keeps a user model
 # across sessions, so chat scope refuses to run with it.
-CHAT_SCOPABLE_BACKENDS = ("hindsight",)
+CHAT_SCOPABLE_BACKENDS = ("hindsight", "openviking")
 
 # agent_context values for which Hermes itself tells providers to skip writes.
 _NO_WRITE_CONTEXTS = ("cron", "subagent")

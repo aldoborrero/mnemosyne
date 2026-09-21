@@ -84,6 +84,7 @@ _DEFAULTS: Dict[str, Any] = {
             "memory_recall",
             "memory_reflect",
             "memory_forget",
+            "memory_read",
         ],
     },
     "prefetch": {
