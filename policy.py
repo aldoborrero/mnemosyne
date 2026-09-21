@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -36,8 +37,14 @@ KNOWN_BACKENDS = ("honcho", "hindsight", "openviking")
 # across sessions, so chat scope refuses to run with it.
 CHAT_SCOPABLE_BACKENDS = ("hindsight", "openviking")
 
-# agent_context values for which Hermes itself tells providers to skip writes.
-_NO_WRITE_CONTEXTS = ("cron", "subagent")
+# Backends that ingest on their own under approved_writes. Honcho uploads
+# MEMORY.md/USER.md/SOUL.md as messages on a new session, and its server-side
+# deriver turns them into LLM-written conclusions.
+UNGATEABLE_BACKENDS = ("honcho",)
+
+# agent_context values for which providers must not write (Hermes sends cron
+# and subagent; honcho also treats flush agents this way).
+_NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
 
 
 def ingest_mode() -> str:
@@ -95,6 +102,29 @@ def scope_slug(scope_key: str) -> str:
 
 def scope_dir(scope_key: str) -> Path:
     return config.plugin_dir() / "scopes" / scope_slug(scope_key)
+
+
+@dataclass(frozen=True)
+class Policy:
+    """Settings read once per provider, so a session cannot change mode midway."""
+    approved_writes_only: bool
+    scope_mode: str
+    backends: tuple
+    prefetch_enabled: bool
+
+
+def snapshot() -> Policy:
+    return Policy(approved_writes_only=approved_writes_only(), scope_mode=scope_mode(),
+                  backends=tuple(backends()), prefetch_enabled=prefetch_enabled())
+
+
+def ingest_problem(selected_backends: List[str]) -> Optional[str]:
+    """Why approved_writes cannot run with these backends, or None if it can."""
+    ungated = [b for b in selected_backends if b in UNGATEABLE_BACKENDS]
+    if ungated:
+        return (f"ingest.mode=approved_writes cannot stop {', '.join(ungated)} from ingesting "
+                f"on its own; remove it from backends")
+    return None
 
 
 def chat_scope_problem(selected_backends: List[str]) -> Optional[str]:

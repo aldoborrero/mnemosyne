@@ -344,7 +344,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
         self._scope_key: Optional[str] = None
         self._disabled_reason: Optional[str] = None
         self._writes_allowed = True
-        self._backends = policy.backends()
+        self._policy = policy.snapshot()
+        self._backends = list(self._policy.backends)
+        # One worker: approved writes reach the backends in the order Hermes made them.
+        self._write_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mnemosyne-write")
         self._load_inner_providers()
 
     def _inject_hindsight_routing_env(self) -> None:
@@ -423,7 +426,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return self._disabled_reason is not None
 
     def _may_ingest_turns(self) -> bool:
-        return not self._blocked and self._writes_allowed and not policy.approved_writes_only()
+        return not self._blocked and self._writes_allowed and not self._policy.approved_writes_only
 
     def _apply_chat_scope(self, kwargs: Dict[str, Any]) -> bool:
         """Resolve the chat scope and point Hindsight at its bank.
@@ -469,7 +472,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         with self._init_lock:
             self._writes_allowed = policy.writes_allowed(str(kwargs.get("agent_context") or ""))
-            if policy.scope_mode() == policy.SCOPE_CHAT and not self._apply_chat_scope(kwargs):
+            problem = (policy.ingest_problem(self._backends)
+                       if self._policy.approved_writes_only else None)
+            if problem:
+                self._disable(problem)
+                self._initialized = True
+                return
+            if self._policy.scope_mode == policy.SCOPE_CHAT and not self._apply_chat_scope(kwargs):
                 self._initialized = True
                 return
 
@@ -533,7 +542,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             # instead, where it also can't starve the prefetch pool.
             # Recovery replays every session transcript on disk: raw turns, from
             # every chat. Never under approved writes or chat scope.
-            if (policy.approved_writes_only() or self._scope_key is not None
+            if (self._policy.approved_writes_only or self._scope_key is not None
                     or not self._writes_allowed):
                 self._initialized = True
                 return
@@ -573,6 +582,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
         ).start()
 
     def shutdown(self) -> None:
+        # Queued writes go to the inner providers, so drain them first.
+        self.flush_writes()
+        self._write_executor.shutdown(wait=False)
         if self._honcho:
             try:
                 self._honcho.shutdown()
@@ -583,6 +595,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._hindsight.shutdown()
             except Exception as exc:
                 logger.debug("mnemosyne: Hindsight shutdown failed: %s", exc)
+        if self._openviking is not None:
+            self._openviking.close()
         self._executor.shutdown(wait=False)
 
     _TOOL_HINTS = {
@@ -627,7 +641,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "When to use which:",
         ]
         lines += [f"- {self._TOOL_HINTS[n]}" for n in names if n in self._TOOL_HINTS]
-        if policy.approved_writes_only():
+        if self._policy.approved_writes_only:
             lines += ["", "To store something new, use the built-in `memory` tool; "
                           "its writes are the only ones kept."]
         return "\n".join(lines) + "\n"
@@ -637,7 +651,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if self._blocked or not policy.prefetch_enabled():
+        if self._blocked or not self._policy.prefetch_enabled:
             return ""
         max_total = int(config.get("prefetch", "max_total_tokens", default=4500))
         anchor_budget = int(config.get("prefetch", "anchor_token_budget", default=200))
@@ -695,7 +709,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return capped
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if self._blocked or not policy.prefetch_enabled():
+        if self._blocked or not self._policy.prefetch_enabled:
             return
         if self._honcho:
             try:
@@ -1068,11 +1082,34 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
         Hermes calls this only for writes that committed, so it is the one
         ingest path left under ``ingest.mode=approved_writes``."""
-        if self._blocked or not self._writes_allowed:
+        if self._blocked or not self._writes_allowed or not action:
+            return
+        metadata = metadata or {}
+        # Hermes names the entry to replace or remove by a unique substring in
+        # metadata["old_text"]; a remove carries no content of its own.
+        if action == "remove":
+            content = content or str(metadata.get("old_text") or "")
+        if not content:
             return
         # A write may invalidate the cached peer card (e.g. profile update).
         with self._cache_lock:
             self._peer_cache = None
+        try:
+            self._write_executor.submit(self._apply_memory_write, action, target, content, metadata)
+        except RuntimeError as exc:  # executor already shut down
+            logger.warning("mnemosyne: memory write after shutdown dropped: %s", exc)
+
+    def flush_writes(self, timeout: float = 30.0) -> bool:
+        """Wait for queued backend writes; True if they all finished in time."""
+        try:
+            done = self._write_executor.submit(lambda: None)
+            done.result(timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    def _apply_memory_write(self, action: str, target: str, content: str,
+                            metadata: Dict[str, Any]) -> None:
         # Pass-through to inner providers so they can do their own bookkeeping.
         if self._honcho:
             try:
@@ -1085,10 +1122,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             except Exception as exc:
                 logger.warning("mnemosyne: Hindsight on_memory_write failed: %s", exc)
 
-        if not content or not action:
-            return
-
-        self._mirror_to_openviking(action, target, content, metadata or {})
+        self._mirror_to_openviking(action, target, content, metadata)
 
         if action == "remove":
             if self._fact_store:
@@ -1134,12 +1168,14 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if store is None:
             return
         try:
-            if action in ("add", "replace"):
+            if action == "add":
                 store.write(target, content)
-            if action == "replace" and metadata.get("old_text"):
-                store.delete_matching(str(metadata["old_text"]))
-            if action == "remove":
-                store.delete_matching(content)
+            elif action == "replace":
+                new_uri = store.write(target, content)
+                if metadata.get("old_text"):
+                    store.delete_containing(target, str(metadata["old_text"]), keep=new_uri)
+            elif action == "remove":
+                store.delete_containing(target, content)
         except Exception as exc:
             logger.warning("mnemosyne: OpenViking %s mirror failed: %s", action, exc)
 
@@ -1148,14 +1184,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if store is None or not query:
             return ""
         try:
-            items = store.find(query, limit=limit)
-            lines = []
-            for item in items:
-                # The file itself, not the server's abstract: the file is the approved text.
-                text = store.read(item["uri"]).strip()[:500]
-                if text:
-                    lines.append(f"- {text} ({item['uri']})")
-            return "\n".join(lines)
+            uris = [item["uri"] for item in store.find(query, limit=limit)]
+            # The files themselves, not the server's abstracts: the files are the approved text.
+            texts = store.read_many(uris)
+            return "\n".join(f"- {text[:500]} ({uri})" for uri, text in zip(uris, texts) if text)
         except Exception as exc:
             logger.warning("mnemosyne: OpenViking recall failed: %s", exc)
             return ""
@@ -1208,7 +1240,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if backend is None or getattr(self, f"_{backend}", None) is None:
             return False
         if tool_name in self._DIRECT_WRITE_TOOLS:
-            return self._writes_allowed and not policy.approved_writes_only()
+            return self._writes_allowed and not self._policy.approved_writes_only
         return True
 
     # Per-tool timeout (seconds), env-overridable — see config.py _ENV_MAP.
@@ -1242,7 +1274,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if not self._tool_usable(tool_name):
             return json.dumps({"error": f"{tool_name} is not available in this configuration"})
         if tool_name == "memory_profile" and args.get("card") is not None and (
-                policy.approved_writes_only() or not self._writes_allowed):
+                self._policy.approved_writes_only or not self._writes_allowed):
             return json.dumps({"error": "profile updates go through the built-in memory tool "
                                         "in this configuration; memory_profile is read-only"})
         if tool_name == "memory_forget":

@@ -29,19 +29,30 @@ class _FakeClient:
     def post(self, path, payload=None, **kwargs):
         self.calls.append(("POST", path, payload))
         if path == "/api/v1/content/write":
+            if payload["mode"] == "create" and payload["uri"] in self.files:
+                raise RuntimeError("409 already exists")
             self.files[payload["uri"]] = payload["content"]
             return {"result": {"uri": payload["uri"]}}
         if path == "/api/v1/search/find":
-            hits = [{"uri": u, "score": 0.9, "abstract": ""}
+            hits = [{"uri": u, "score": 0.9, "abstract": "server abstract"}
                     for u, c in self.files.items()
                     if u.startswith(payload["target_uri"]) and payload["query"].split()[0].lower() in c.lower()]
             return {"result": {"memories": hits + self.extra_results}}
         raise AssertionError(f"unexpected POST {path}")
 
     def get(self, path, **kwargs):
-        self.calls.append(("GET", path, kwargs.get("params")))
-        assert path == "/api/v1/content/read"
-        return {"result": {"content": self.files.get(kwargs["params"]["uri"], "")}}
+        params = kwargs.get("params") or {}
+        self.calls.append(("GET", path, params))
+        if path == "/api/v1/content/read":
+            if params["uri"] not in self.files:
+                raise RuntimeError("404")
+            return {"result": {"content": self.files[params["uri"]]}}
+        if path == "/api/v1/fs/ls":
+            prefix = params["uri"]
+            entries = [{"uri": u, "isDir": False} for u in self.files if u.startswith(prefix)]
+            entries.append({"uri": prefix + ".overview.md", "isDir": False})
+            return {"result": entries}
+        raise AssertionError(f"unexpected GET {path}")
 
     def delete(self, path, **kwargs):
         self.calls.append(("DELETE", path, kwargs.get("params")))
@@ -80,11 +91,14 @@ def hermes_home(tmp_path, monkeypatch):
 # store
 # ---------------------------------------------------------------------------
 
-def test_write_goes_under_scope_root():
+def test_write_goes_under_scope_root_and_is_idempotent():
     client = _FakeClient()
-    uri = _store(client).write("user", "prefers terse replies")
+    store = _store(client)
+    uri = store.write("user", "prefers terse replies")
     assert uri.startswith(ROOT + "user/mem_") and uri.endswith(".md")
     assert client.calls[0][2]["mode"] == "create"
+    assert store.write("user", "prefers terse replies\n") == uri
+    assert list(client.files) == [uri]
 
 
 def test_find_is_scoped_and_drops_foreign_results():
@@ -95,7 +109,8 @@ def test_find_is_scoped_and_drops_foreign_results():
     assert client.calls[0][2]["target_uri"] == ROOT
 
 
-@pytest.mark.parametrize("uri", [FOREIGN, ROOT + "../other/memory/mem_1.md"])
+@pytest.mark.parametrize("uri", [FOREIGN, ROOT + "../other/memory/mem_1.md", ROOT, ROOT + "memory//x.md",
+                                 ROOT + "./memory/x.md"])
 def test_read_and_delete_refuse_outside_root(uri):
     store = _store(_FakeClient())
     with pytest.raises(ValueError):
@@ -104,11 +119,15 @@ def test_read_and_delete_refuse_outside_root(uri):
         store.delete(uri)
 
 
-def test_delete_matching_is_exact():
-    client = _FakeClient(files={ROOT + "memory/mem_a.md": "deploy key is in vault",
-                                ROOT + "memory/mem_b.md": "deploy key is in vault, rotated monthly"})
-    assert _store(client).delete_matching("deploy key is in vault") == 1
-    assert list(client.files) == [ROOT + "memory/mem_b.md"]
+def test_delete_containing_needs_a_unique_match():
+    a, b = ROOT + "memory/mem_a.md", ROOT + "memory/mem_b.md"
+    client = _FakeClient(files={a: "deploy key is in vault", b: "deploy key rotates monthly"})
+    store = _store(client)
+    assert store.delete_containing("memory", "deploy key") == 0
+    assert set(client.files) == {a, b}
+    assert store.delete_containing("memory", "in vault") == 1
+    assert set(client.files) == {b}
+    assert store.list_files("memory") == [b]
 
 
 def test_connect_needs_health_and_server_user(monkeypatch):
@@ -148,11 +167,14 @@ def test_memory_write_bridge_add_replace_remove(monkeypatch):
     client = _FakeClient()
     p = _provider(client, monkeypatch)
     p.on_memory_write("add", "memory", "deploy key is in vault")
-    assert list(client.files.values()) == ["deploy key is in vault"]
-    p.on_memory_write("replace", "memory", "deploy key is in the new vault",
-                      {"old_text": "deploy key is in vault"})
-    assert list(client.files.values()) == ["deploy key is in the new vault"]
-    p.on_memory_write("remove", "memory", "deploy key is in the new vault")
+    # Hermes passes the old entry as a substring, and the new text contains it.
+    p.on_memory_write("replace", "memory", "deploy key is in vault, now rotated",
+                      {"old_text": "in vault"})
+    assert p.flush_writes()
+    assert list(client.files.values()) == ["deploy key is in vault, now rotated"]
+    # A remove carries no content; the entry comes as metadata["old_text"].
+    p.on_memory_write("remove", "memory", "", {"old_text": "now rotated"})
+    assert p.flush_writes()
     assert client.files == {}
 
 
@@ -163,6 +185,7 @@ def test_turns_never_reach_openviking_and_no_sessions(monkeypatch):
     p.on_session_end([{"role": "user", "content": "x"}])
     p.on_pre_compress([{"role": "user", "content": "x"}])
     p.on_memory_write("add", "memory", "fact")
+    assert p.flush_writes()
     assert not [path for path in client.paths() if "session" in path]
     assert [c[1] for c in client.calls] == ["/api/v1/content/write"]
 
@@ -175,7 +198,7 @@ def test_recall_and_read_openviking_only(monkeypatch):
     assert set(names) == {"memory_recall", "memory_read"}
     out = json.loads(p.handle_tool_call("memory_recall", {"query": "deploy"}))["result"]
     assert "deploy key is in vault" in out and ROOT in out
-    assert "leak" not in out
+    assert "leak" not in out and "server abstract" not in out
     assert "error" in json.loads(p.handle_tool_call("memory_read", {"uri": FOREIGN}))
     read = json.loads(p.handle_tool_call("memory_read", {"uri": ROOT + "memory/mem_a.md"}))
     assert read["content"] == "deploy key is in vault"

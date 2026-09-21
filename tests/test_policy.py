@@ -100,6 +100,7 @@ def test_approved_writes_keeps_memory_write_bridge(hermes_home, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
     p = _provider(backends=("hindsight",))
     p.on_memory_write("add", "memory", "the deploy key lives in vault")
+    assert p.flush_writes()
     kinds = p._hindsight.kinds()
     assert "on_memory_write" in kinds
     retains = [e for e in p._hindsight.events if e[0] == "tool" and e[1] == "hindsight_retain"]
@@ -120,6 +121,29 @@ def test_approved_writes_hides_direct_write_tools(hermes_home, monkeypatch):
     assert "built-in `memory` tool" in p.system_prompt_block()
 
 
+def test_remove_uses_old_text(hermes_home):
+    p = _provider(backends=("hindsight",))
+    p.on_memory_write("remove", "memory", "", {"old_text": "deploy key"})
+    assert p.flush_writes()
+    tombstones = [e for e in p._hindsight.events if e[0] == "tool" and e[1] == "hindsight_retain"]
+    assert tombstones and "deploy key" in tombstones[0][2]["content"]
+
+
+def test_approved_writes_refuses_honcho(hermes_home, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
+    p = _provider()
+    p.initialize("s1", platform="matrix", chat_id="!a:example.org")
+    assert p._blocked and "honcho" in p._disabled_reason
+    assert "initialize" not in p._honcho.kinds()
+
+
+def test_policy_is_fixed_per_provider(hermes_home, monkeypatch):
+    p = _provider()
+    monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
+    p.sync_turn("user turn", "assistant turn")
+    assert "sync_turn" in p._hindsight.kinds()
+
+
 def test_turns_mode_still_ingests(hermes_home):
     p = _provider()
     p.sync_turn("user turn", "assistant turn")
@@ -129,6 +153,7 @@ def test_turns_mode_still_ingests(hermes_home):
 
 def test_subagent_context_never_writes(hermes_home):
     p = _provider(backends=("hindsight",))
+    assert not policy.writes_allowed("flush")
     p._writes_allowed = policy.writes_allowed("subagent")
     p.on_memory_write("add", "memory", "fact")
     p.sync_turn("u", "a")
