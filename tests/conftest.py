@@ -95,4 +95,5 @@ def make_provider(*, honcho_sleep: float = 0.0, hindsight_sleep: float = 0.0,
     provider._peer_cache = None
     provider._peer_cache_ttl_s = 60.0
     provider._cache_lock = _threading.Lock()
+    provider._writes_allowed = True
     return provider
