@@ -333,45 +333,82 @@ def _cmd_forget(args) -> int:
         return 1
     fs = FactStore()
 
-    confirm = None
-    if not args.yes:
-        confirm = _interactive_confirm
+    # Step 1 — preview. Pins the candidate list and hands back a token; the
+    # confirm below applies exactly that list, so the CLI and the
+    # memory_forget tool now share one code path and one semantics.
+    preview = forget_by_query(
+        fs, provider, args.query,
+        max_items=args.max_items,
+    )
+    if preview.get("error"):
+        print(json.dumps(preview, ensure_ascii=False, indent=2))
+        _shutdown(provider)
+        return 1
+
+    candidates = preview.get("candidates") or []
+    if not candidates:
+        print("Nothing matched — nothing forgotten.")
+        _shutdown(provider)
+        return 0
+
+    # Step 2 — pick. --yes takes the whole previewed list; otherwise ask and
+    # translate the answer into 1-based indices into that same list.
+    if args.yes:
+        indices = None
+    else:
+        indices = _interactive_select(candidates)
+        if not indices:
+            print("Nothing selected — nothing forgotten.")
+            _shutdown(provider)
+            return 0
+
     result = forget_by_query(
         fs, provider, args.query,
-        confirm=confirm,
+        confirmed=True,
+        preview_token=preview.get("preview_token"),
+        indices=indices,
         max_items=args.max_items,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
-
-    try:
-        provider.shutdown()
-    except Exception:
-        pass
+    _shutdown(provider)
     return 0
 
 
-def _interactive_confirm(candidates):
+def _interactive_select(candidates):
+    """Show the pinned preview and return the 1-based indices to forget.
+
+    None means "all of them", [] means "none". Indices are positions in the
+    preview, which is exactly what forget_by_query applies them against.
+    """
     print(f"\nFound {len(candidates)} candidate(s) to forget:")
-    for i, c in enumerate(candidates, 1):
-        text = c if isinstance(c, str) else (c.get("text") or c.get("content") or str(c))
-        preview = text.strip().replace("\n", " ")
-        if len(preview) > 200:
-            preview = preview[:200] + "…"
-        print(f"  {i}. {preview}")
+    for pos, c in enumerate(candidates, 1):
+        text = c.get("text", "") if isinstance(c, dict) else str(c)
+        idx = c.get("index", pos) if isinstance(c, dict) else pos
+        line = text.strip().replace("\n", " ")
+        if len(line) > 200:
+            line = line[:200] + "…"
+        print(f"  {idx}. {line}")
     print()
     choice = input("Forget all? [y/N/<comma-separated indices>] ").strip().lower()
     if choice in ("y", "yes"):
-        return candidates
+        return None
     if choice in ("", "n", "no"):
         return []
     chosen = []
     for tok in choice.split(","):
         tok = tok.strip()
         if tok.isdigit():
-            idx = int(tok) - 1
-            if 0 <= idx < len(candidates):
-                chosen.append(candidates[idx])
+            i = int(tok)
+            if 1 <= i <= len(candidates):
+                chosen.append(i)
     return chosen
+
+
+def _shutdown(provider) -> None:
+    try:
+        provider.shutdown()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

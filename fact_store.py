@@ -17,7 +17,7 @@ import logging
 import re
 import sqlite3
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +40,26 @@ def _canonical_key(text: str) -> str:
     s = _PUNCT_RE.sub(" ", s)
     s = _WS_RE.sub(" ", s).strip()
     return s
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat()
+
+
+def _age_seconds(iso_ts: str) -> float:
+    """Seconds elapsed since an ISO timestamp written by _utc_now_iso.
+    Returns +inf for anything unparseable, so callers treat it as expired."""
+    try:
+        parsed = datetime.fromisoformat(iso_ts)
+    except Exception:
+        return float("inf")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (_utc_now() - parsed).total_seconds()
 
 
 def today_iso() -> str:
@@ -87,6 +107,25 @@ class FactStore:
             last_match_ts TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_sig_last_match ON forgotten_signatures(last_match_ts);
+
+        -- Pinned forget previews.
+        --
+        -- `memory_forget` is a two-step tool: step 1 returns candidates for
+        -- the user to approve, step 2 applies them. Re-running recall in
+        -- step 2 is not safe — Hindsight ranks by reranker score, which
+        -- drifts, so the second call can return a different set than the
+        -- one the user approved. We therefore persist the exact candidate
+        -- list from step 1 under an opaque token and apply step 2 against
+        -- that snapshot, never against a fresh recall.
+        --
+        -- Rows are short-lived (see forget.preview_ttl_s) and purged on
+        -- every save.
+        CREATE TABLE IF NOT EXISTS forget_previews (
+            token TEXT PRIMARY KEY,
+            query TEXT NOT NULL,
+            candidates TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
     """
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
@@ -370,11 +409,10 @@ class FactStore:
         """Drop oldest sigs over ``max_count``, plus any whose
         last_match_ts (or created_at if never matched) is older than
         ``stale_days``. Returns rows removed."""
-        from datetime import datetime, timedelta
         removed = 0
         with self._lock, self._connect() as conn:
             if stale_days is not None and stale_days > 0:
-                cutoff = (datetime.utcnow() - timedelta(days=stale_days)).date().isoformat()
+                cutoff = (_utc_now() - timedelta(days=stale_days)).date().isoformat()
                 cur = conn.execute(
                     "DELETE FROM forgotten_signatures "
                     "WHERE COALESCE(last_match_ts, created_at) < ?",
@@ -394,6 +432,57 @@ class FactStore:
                 )
                 removed += cur.rowcount or 0
         return removed
+
+    # ------------------------------------------------------------------
+    # Pinned forget previews
+    # ------------------------------------------------------------------
+
+    def save_preview(
+        self, token: str, query: str, candidates: List[Dict[str, Any]]
+    ) -> None:
+        """Persist the candidate snapshot a preview showed to the user."""
+        if not token:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO forget_previews(token, query, candidates, created_at) "
+                "VALUES(?, ?, ?, ?)",
+                (
+                    token,
+                    query,
+                    json.dumps(candidates, ensure_ascii=False),
+                    _utc_now_iso(),
+                ),
+            )
+
+    def load_preview(self, token: str, *, max_age_s: float) -> Optional[Dict[str, Any]]:
+        """Return the pinned preview, or None if unknown or expired."""
+        if not token:
+            return None
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT query, candidates, created_at FROM forget_previews WHERE token = ?",
+                (token,),
+            ).fetchone()
+        if not row:
+            return None
+        if _age_seconds(row[2]) > max_age_s:
+            return None
+        try:
+            candidates = json.loads(row[1] or "[]")
+        except Exception:
+            return None
+        return {"query": row[0], "candidates": candidates, "created_at": row[2]}
+
+    def purge_previews(self, *, max_age_s: float) -> int:
+        """Drop previews older than max_age_s. Returns rows removed."""
+        cutoff = _utc_now() - timedelta(seconds=max_age_s)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM forget_previews WHERE created_at < ?",
+                (cutoff.isoformat(),),
+            )
+        return cur.rowcount or 0
 
     # ------------------------------------------------------------------
     # Tagging helpers — what we attach to Hindsight on retain.

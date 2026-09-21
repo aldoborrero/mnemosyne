@@ -805,7 +805,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
             if tokens:
                 sig_tokens.append((sig.get("id"), tokens))
 
-        from .dedup import _content_tokens
+        # Same tokenizer the signature was built with in forget.py —
+        # dedup's stoplist differs, which would score containment
+        # across two different vocabularies.
+        from .forget import _content_tokens
         kept: List[str] = []
         sig_hits: set = set()
         for line in text.splitlines():
@@ -1166,6 +1169,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             return json.dumps({"error": "fact_store unavailable"}, ensure_ascii=False)
 
         confirmed = bool(args.get("confirmed", False))
+        preview_token = args.get("preview_token") or None
         indices = args.get("indices")
         if indices is not None:
             try:
@@ -1177,6 +1181,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         result = forget_by_query(
             self._fact_store, self._hindsight, query,
             confirmed=confirmed,
+            preview_token=preview_token,
             indices=indices,
             max_items=max_items,
         )
