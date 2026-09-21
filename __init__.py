@@ -66,7 +66,8 @@ def _mnemosyne_force_reload(submodule_name: str):
     return mod
 
 
-for _sub in ("config", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
+for _sub in ("config", "policy", "memory_files", "reconcile", "openviking_store", "hindsight_store",
+             "approved", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
     try:
         _mnemosyne_force_reload(_sub)
     except Exception as _exc:  # pragma: no cover
@@ -1252,5 +1253,14 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
 
 def register(ctx) -> None:
-    """Hermes plugin entry point — register Mnemosyne as a memory provider."""
+    """Hermes plugin entry point — register Mnemosyne as a memory provider.
+
+    ``ingest.mode=approved_writes`` selects ``ApprovedMemoryProvider``, whose
+    backends mirror only Hermes' approved built-in memory; the default keeps
+    the Honcho + Hindsight composite above."""
+    from . import policy
+    if policy.approved_writes_only():
+        from .approved import ApprovedMemoryProvider
+        ctx.register_memory_provider(ApprovedMemoryProvider())
+        return
     ctx.register_memory_provider(MnemosyneMemoryProvider())

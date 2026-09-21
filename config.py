@@ -13,12 +13,28 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 _DEFAULTS: Dict[str, Any] = {
+    "ingest": {
+        # "turns": the Honcho + Hindsight composite, fed by every turn.
+        # "approved_writes": the backends mirror only Hermes' approved built-in
+        # memory (MEMORY.md / USER.md). See approved.py.
+        "mode": "turns",
+    },
+    "approved": {
+        "backends": ["openviking"],   # any of "openviking", "hindsight"
+        "prefetch": False,            # inject recalled entries every turn
+        "reflect": False,             # expose memory_reflect (LLM, traced server-side)
+    },
+    "hindsight_direct": {
+        "api_url": "",                # required; the key comes from HINDSIGHT_API_KEY
+        "allow_cloud": False,
+        "timeout": 30.0,
+    },
     "delegation": {
         "auto_inject_user_model": "honcho",
         "auto_inject_facts": "hindsight",
@@ -118,6 +134,12 @@ _DEFAULTS: Dict[str, Any] = {
 # the type of the corresponding default when reading.
 # ---------------------------------------------------------------------------
 _ENV_MAP: Dict[str, List[str]] = {
+    # Approved-writes mode (see approved.py)
+    "MNEMOSYNE_INGEST_MODE":         ["ingest", "mode"],
+    "MNEMOSYNE_APPROVED_BACKENDS":   ["approved", "backends"],
+    "MNEMOSYNE_APPROVED_PREFETCH":   ["approved", "prefetch"],
+    "MNEMOSYNE_APPROVED_REFLECT":    ["approved", "reflect"],
+    "MNEMOSYNE_HINDSIGHT_URL":       ["hindsight_direct", "api_url"],
     # Timeouts (seconds)
     "MNEMOSYNE_TIMEOUT_RECALL":     ["timeouts", "recall"],
     "MNEMOSYNE_TIMEOUT_REASONING":  ["timeouts", "reasoning"],
@@ -162,6 +184,8 @@ _ENV_MAP: Dict[str, List[str]] = {
 
 def _coerce(value: str, like: Any) -> Any:
     """Best-effort string→type coercion based on the default value's type."""
+    if isinstance(like, list):
+        return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(like, bool):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(like, int):
@@ -178,18 +202,25 @@ def _coerce(value: str, like: Any) -> Any:
 
 
 def _hermes_home() -> Path:
+    # Hermes resolves the profile home per context (a multiplexed gateway serves
+    # several profiles from one process); the env var is only the process default.
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:
+        pass
     home = os.environ.get("HERMES_HOME")
     if home:
         return Path(home)
     return Path.home() / ".hermes"
 
 
-def plugin_dir() -> Path:
-    return _hermes_home() / "plugins" / "mnemosyne"
+def plugin_dir(home: Optional[Path] = None) -> Path:
+    return Path(home or _hermes_home()) / "plugins" / "mnemosyne"
 
 
-def config_path() -> Path:
-    return plugin_dir() / "config.json"
+def config_path(home: Optional[Path] = None) -> Path:
+    return plugin_dir(home) / "config.json"
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -231,10 +262,10 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return cfg
 
 
-def load() -> Dict[str, Any]:
+def load(home: Optional[Path] = None) -> Dict[str, Any]:
     """Load config: defaults → config.json overrides → env-var overrides."""
     cfg = json.loads(json.dumps(_DEFAULTS))  # deep copy of defaults
-    path = config_path()
+    path = config_path(home)
     if path.exists():
         try:
             with path.open() as f:
@@ -246,9 +277,9 @@ def load() -> Dict[str, Any]:
     return _apply_env_overrides(cfg)
 
 
-def get(*keys: str, default: Any = None) -> Any:
+def get(*keys: str, default: Any = None, home: Optional[Path] = None) -> Any:
     """Convenience: cfg.get('fact_store', 'strong_signal_threshold')."""
-    node: Any = load()
+    node: Any = load(home)
     for key in keys:
         if not isinstance(node, dict) or key not in node:
             return default
