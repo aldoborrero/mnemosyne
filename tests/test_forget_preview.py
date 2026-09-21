@@ -165,16 +165,8 @@ def test_confirm_registers_a_semantic_signature(store):
 
 
 def test_signature_tokens_match_the_read_side_filter_tokenizer(store):
-    """The signature is built and matched with the same tokenizer.
-
-    They used to differ (forget._FORGET_STOP vs dedup._STOP, ~38 tokens
-    apart), so containment was scored across two vocabularies.
-    """
-    from _hermes_user_memory.mnemosyne import dedup
-
-    line = "Assistant deleted the user's Barsik information"
-    assert forget_mod._content_tokens(line) != dedup._content_tokens(line)
-
+    """The signature is built and matched with the same tokenizer, so the
+    containment filter never scores across two vocabularies."""
     import _hermes_user_memory.mnemosyne as pkg
     import inspect
 
