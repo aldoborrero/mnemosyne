@@ -258,6 +258,15 @@ _TOOL_DISPATCH = {
 }
 
 
+# agent_context values whose sessions must not write memory. Hermes passes
+# "cron" for scheduled jobs and "subagent" for delegate_task children, and
+# documents that providers skip writes for them; Honcho also skips "flush".
+_NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
+
+# Tools that write to a backend directly rather than through the bridge.
+_WRITE_TOOLS = ("memory_conclude", "memory_forget")
+
+
 def _truncate_to_chars(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -298,6 +307,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # tool calls so agent-driven recall isn't queued behind background
         # retain jobs.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mnemosyne")
+        self._writes_allowed = True
         self._fact_store: Optional[FactStore] = None
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -384,6 +394,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         with self._init_lock:
+            self._writes_allowed = str(kwargs.get("agent_context") or "") not in _NO_WRITE_CONTEXTS
             # The Hindsight embedded daemon inherits the parent process's
             # os.environ at start time (daemon_embed_manager.py:331). Inject
             # our Jina/Qwen3 routing here so the daemon picks them up via
@@ -433,7 +444,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
             # agent startup — for minutes. It runs on its own daemon thread
             # instead, where it also can't starve the prefetch pool.
             try:
-                if initialize_cursor_if_missing():
+                if not self._writes_allowed:
+                    logger.debug("mnemosyne: recovery skipped in a non-writing session")
+                elif initialize_cursor_if_missing():
                     logger.info("mnemosyne: recovery cursor stamped at current state")
                 else:
                     self._spawn_recovery()
@@ -838,6 +851,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        if not self._writes_allowed:
+            return
         # Bump fact_store on user turn (cheap, exact-key dedup only).
         if self._fact_store and user_content.strip():
             try:
@@ -941,6 +956,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
         Mirror every memory(...) call from the user-facing tool into Hindsight
         with `source:user_explicit` and a max-strength fact_store mark."""
+        if not self._writes_allowed:
+            return
         # A write may invalidate the cached peer card (e.g. profile update).
         with self._cache_lock:
             self._peer_cache = None
@@ -1014,7 +1031,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "memory_reflect":   _REFLECT_SCHEMA,
             "memory_forget":    MEMORY_FORGET_SCHEMA,
         }
-        return [catalogue[n] for n in exposed if n in catalogue]
+        return [catalogue[n] for n in exposed
+                if n in catalogue and (self._writes_allowed or n not in _WRITE_TOOLS)]
 
     # Per-tool timeout (seconds), env-overridable — see config.py _ENV_MAP.
     # Defaults are generous (3-5 min for reasoning paths) so genuine deep
@@ -1041,6 +1059,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
             return None
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        if not self._writes_allowed and (
+                tool_name in _WRITE_TOOLS or (tool_name == "memory_profile" and args.get("card"))):
+            return json.dumps({"error": f"{tool_name} cannot write from this session "
+                                        "(cron, subagent or flush context)"})
         if tool_name == "memory_forget":
             return self._handle_forget(args)
 
@@ -1145,6 +1167,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 pass
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._writes_allowed:
+            return
         if self._honcho:
             try:
                 self._honcho.on_session_end(messages)
@@ -1187,6 +1211,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 pass
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        if not self._writes_allowed:
+            return ""
         parts: List[str] = []
         if self._honcho:
             try:
@@ -1205,6 +1231,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        if not self._writes_allowed:
+            return
         if self._honcho:
             try:
                 self._honcho.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
