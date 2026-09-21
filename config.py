@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULTS: Dict[str, Any] = {
+    # Which inner providers are loaded. See policy.py.
+    "backends": ["honcho", "hindsight"],
+    "ingest": {
+        # "turns": every turn is fed to the inner providers' extractors.
+        # "approved_writes": only committed built-in memory writes reach them.
+        "mode": "turns",
+    },
+    "scope": {
+        # "none": one memory per install. "chat": one per gateway chat.
+        "mode": "none",
+    },
     "delegation": {
         "auto_inject_user_model": "honcho",
         "auto_inject_facts": "hindsight",
@@ -76,6 +87,8 @@ _DEFAULTS: Dict[str, Any] = {
         ],
     },
     "prefetch": {
+        # False: nothing is injected per turn; recall only via memory_recall.
+        "enabled": True,
         "max_total_tokens": 4500,
         "anchor_token_budget": 200,
         "honcho_card_token_budget": 200,
@@ -118,6 +131,11 @@ _DEFAULTS: Dict[str, Any] = {
 # the type of the corresponding default when reading.
 # ---------------------------------------------------------------------------
 _ENV_MAP: Dict[str, List[str]] = {
+    # Policy (see policy.py)
+    "MNEMOSYNE_BACKENDS":           ["backends"],
+    "MNEMOSYNE_INGEST_MODE":        ["ingest", "mode"],
+    "MNEMOSYNE_SCOPE_MODE":         ["scope", "mode"],
+    "MNEMOSYNE_PREFETCH_ENABLED":   ["prefetch", "enabled"],
     # Timeouts (seconds)
     "MNEMOSYNE_TIMEOUT_RECALL":     ["timeouts", "recall"],
     "MNEMOSYNE_TIMEOUT_REASONING":  ["timeouts", "reasoning"],
@@ -162,6 +180,8 @@ _ENV_MAP: Dict[str, List[str]] = {
 
 def _coerce(value: str, like: Any) -> Any:
     """Best-effort string→type coercion based on the default value's type."""
+    if isinstance(like, list):
+        return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(like, bool):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(like, int):

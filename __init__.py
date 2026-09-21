@@ -66,7 +66,7 @@ def _mnemosyne_force_reload(submodule_name: str):
     return mod
 
 
-for _sub in ("config", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
+for _sub in ("config", "policy", "conflict", "fact_store", "forget", "recovery", "importer", "dedup"):
     try:
         _mnemosyne_force_reload(_sub)
     except Exception as _exc:  # pragma: no cover
@@ -84,7 +84,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from . import config
+from . import config, policy
 from .conflict import is_contradiction, label_pair
 from .fact_store import FactStore, today_iso
 from .forget import (
@@ -318,6 +318,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
             config.get("prefetch", "peer_card_ttl_s", default=60.0)
         )
         self._cache_lock = threading.Lock()
+        # Set in initialize(). While _disabled_reason is not None the provider
+        # neither recalls nor writes (fail closed on a scope it cannot apply).
+        self._scope_key: Optional[str] = None
+        self._disabled_reason: Optional[str] = None
+        self._writes_allowed = True
+        self._backends = policy.backends()
         self._load_inner_providers()
 
     def _inject_hindsight_routing_env(self) -> None:
@@ -357,26 +363,77 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 _o.environ[k] = str(value)
 
     def _load_inner_providers(self) -> None:
-        try:
-            from plugins.memory.honcho import HonchoMemoryProvider
-            self._honcho = HonchoMemoryProvider()
-        except Exception as exc:
-            logger.warning("mnemosyne: failed to load Honcho inner provider: %s", exc)
+        if "honcho" in self._backends:
+            try:
+                from plugins.memory.honcho import HonchoMemoryProvider
+                self._honcho = HonchoMemoryProvider()
+            except Exception as exc:
+                logger.warning("mnemosyne: failed to load Honcho inner provider: %s", exc)
 
-        try:
-            from plugins.memory.hindsight import HindsightMemoryProvider
-            self._hindsight = HindsightMemoryProvider()
-        except Exception as exc:
-            logger.warning("mnemosyne: failed to load Hindsight inner provider: %s", exc)
+        if "hindsight" in self._backends:
+            try:
+                from plugins.memory.hindsight import HindsightMemoryProvider
+                self._hindsight = HindsightMemoryProvider()
+            except Exception as exc:
+                logger.warning("mnemosyne: failed to load Hindsight inner provider: %s", exc)
 
     @property
     def name(self) -> str:
         return "mnemosyne"
 
     def is_available(self) -> bool:
-        h_ok = bool(self._honcho and self._honcho.is_available())
-        i_ok = bool(self._hindsight and self._hindsight.is_available())
-        return h_ok and i_ok
+        if not self._backends:
+            return False
+        inner = {"honcho": self._honcho, "hindsight": self._hindsight}
+        return all(inner[b] is not None and inner[b].is_available() for b in self._backends)
+
+    def _disable(self, reason: str) -> None:
+        self._disabled_reason = reason
+        logger.warning("mnemosyne: memory disabled for this session — %s", reason)
+
+    @property
+    def _blocked(self) -> bool:
+        return self._disabled_reason is not None
+
+    def _may_ingest_turns(self) -> bool:
+        return not self._blocked and self._writes_allowed and not policy.approved_writes_only()
+
+    def _apply_chat_scope(self, kwargs: Dict[str, Any]) -> bool:
+        """Resolve the chat scope and point Hindsight at its bank.
+
+        The scope comes from Hermes' gateway identity kwargs, never from a tool
+        argument. Returns False (and disables the provider) when it cannot be
+        applied."""
+        problem = policy.chat_scope_problem(self._backends)
+        if problem:
+            self._disable(problem)
+            return False
+        scope_key = policy.chat_scope_key(str(kwargs.get("platform") or ""),
+                                          str(kwargs.get("chat_id") or ""))
+        if scope_key is None:
+            self._disable("scope.mode=chat but this session has no gateway chat id")
+            return False
+        self._scope_key = scope_key
+        return True
+
+    def _scope_hindsight_bank(self) -> bool:
+        """Suffix Hindsight's resolved bank with the scope slug.
+
+        Hindsight's bank_id_template has no chat placeholder, so the bank is
+        re-pointed after its initialize() resolved the configured one."""
+        if self._scope_key is None or self._hindsight is None:
+            return True
+        base = getattr(self._hindsight, "_bank_id", None)
+        if not isinstance(base, str) or not base:
+            self._disable("cannot read Hindsight's bank id to scope it")
+            return False
+        scoped = f"{base}-{policy.scope_slug(self._scope_key)}"
+        self._hindsight._bank_id = scoped
+        if getattr(self._hindsight, "_bank_id", None) != scoped:
+            self._disable("cannot set Hindsight's scoped bank id")
+            return False
+        logger.info("mnemosyne: scoped to %s (bank %s)", self._scope_key, scoped)
+        return True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -384,6 +441,11 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         with self._init_lock:
+            self._writes_allowed = policy.writes_allowed(str(kwargs.get("agent_context") or ""))
+            if policy.scope_mode() == policy.SCOPE_CHAT and not self._apply_chat_scope(kwargs):
+                self._initialized = True
+                return
+
             # The Hindsight embedded daemon inherits the parent process's
             # os.environ at start time (daemon_embed_manager.py:331). Inject
             # our Jina/Qwen3 routing here so the daemon picks them up via
@@ -402,9 +464,14 @@ class MnemosyneMemoryProvider(MemoryProvider):
                     self._hindsight.initialize(session_id, **kwargs)
                 except Exception as exc:
                     logger.warning("mnemosyne: Hindsight initialize failed: %s", exc)
+            if not self._scope_hindsight_bank():
+                self._initialized = True
+                return
 
             try:
-                self._fact_store = FactStore()
+                db_path = (policy.scope_dir(self._scope_key) / "fact_store.db"
+                           if self._scope_key else None)
+                self._fact_store = FactStore(db_path=db_path)
                 # One-shot vacuum: bound the signatures table so it
                 # never silently grows past the configured ceiling.
                 try:
@@ -432,6 +499,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
             # so a backlog could hold `_init_lock` — and with it the whole
             # agent startup — for minutes. It runs on its own daemon thread
             # instead, where it also can't starve the prefetch pool.
+            # Recovery replays every session transcript on disk: raw turns, from
+            # every chat. Never under approved writes or chat scope.
+            if (policy.approved_writes_only() or self._scope_key is not None
+                    or not self._writes_allowed):
+                self._initialized = True
+                return
             try:
                 if initialize_cursor_if_missing():
                     logger.info("mnemosyne: recovery cursor stamped at current state")
@@ -480,47 +553,58 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 logger.debug("mnemosyne: Hindsight shutdown failed: %s", exc)
         self._executor.shutdown(wait=False)
 
+    _TOOL_HINTS = {
+        "memory_recall": "`memory_recall(query)`        — FIRST CHOICE for 'do you "
+                         "remember…', 'we discussed…', 'how did we fix…'.",
+        "memory_reflect": "`memory_reflect(query)`       — synthesised summary across "
+                          "multiple past facts ('what did we conclude about X?').",
+        "memory_profile": "`memory_profile(card?)`       — read or update the user's "
+                          "profile card (stable preferences, role, communication style).",
+        "memory_reasoning": "`memory_reasoning(query)`     — questions about the user "
+                            "**as a person** (style, habits). Slow — use sparingly.",
+        "memory_conclude": "`memory_conclude(conclusion)` — record a stable fact about "
+                           "the user.",
+        "memory_forget": "`memory_forget(query)`        — TWO STEPS. First call with "
+                         "just the query returns a preview list of candidates. Show that "
+                         "list to the user verbatim, get explicit confirmation, then "
+                         "re-invoke with `confirmed=true` (or `indices=[1,3]` to pick a "
+                         "subset). NEVER call with `confirmed=true` on the first try.",
+    }
+
     def system_prompt_block(self) -> str:
         """Tell the agent about Mnemosyne's curated tool surface.
 
         Crucially we DO NOT delegate to ``self._honcho.system_prompt_block()``
         or ``self._hindsight.system_prompt_block()`` — those describe their
         native tool names (``honcho_*`` / ``hindsight_*``) which we
-        deliberately hide behind our 6 curated tools. Letting them through
+        deliberately hide behind our curated tools. Letting them through
         would tell the LLM that ``honcho_search`` etc. exist when in fact
         only the curated set is callable, leading to phantom tool calls and
         confused tool selection."""
-        return (
-            "# Memory (Mnemosyne)\n"
-            "You have a long-term memory system backed by two layers: a user "
-            "model (style, preferences, behavioral patterns) and a fact store "
-            "(prior conversations, entities, decisions). Both are accessed "
-            "through these six tools — DO NOT call any tool name that starts "
-            "with `honcho_` or `hindsight_`; those are not exposed.\n"
-            "\n"
-            "When to use which:\n"
-            "- `memory_recall(query)`        — FIRST CHOICE for 'do you "
-            "remember…', 'we discussed…', 'how did we fix…'.\n"
-            "- `memory_reflect(query)`       — synthesised summary across "
-            "multiple past facts ('what did we conclude about X?').\n"
-            "- `memory_profile(card?)`       — read or update the user's "
-            "profile card (stable preferences, role, communication style).\n"
-            "- `memory_reasoning(query)`     — questions about the user "
-            "**as a person** (style, habits). Slow — use sparingly.\n"
-            "- `memory_conclude(conclusion)` — record a stable fact about "
-            "the user.\n"
-            "- `memory_forget(query)`        — TWO STEPS. First call with "
-            "just the query returns a preview list of candidates. Show that "
-            "list to the user verbatim, get explicit confirmation, then "
-            "re-invoke with `confirmed=true` (or `indices=[1,3]` to pick a "
-            "subset). NEVER call with `confirmed=true` on the first try.\n"
-        )
+        names = [schema["name"] for schema in self.get_tool_schemas()]
+        if not names:
+            return ""
+        lines = [
+            "# Memory (Mnemosyne)",
+            "You have a long-term memory system. It is accessed only through "
+            "the tools below — DO NOT call any tool name that starts with "
+            "`honcho_` or `hindsight_`; those are not exposed.",
+            "",
+            "When to use which:",
+        ]
+        lines += [f"- {self._TOOL_HINTS[n]}" for n in names if n in self._TOOL_HINTS]
+        if policy.approved_writes_only():
+            lines += ["", "To store something new, use the built-in `memory` tool; "
+                          "its writes are the only ones kept."]
+        return "\n".join(lines) + "\n"
 
     # ------------------------------------------------------------------
     # Prefetch (plan item 6/7 fusion: anchor → peer card → Hindsight recall)
     # ------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if self._blocked or not policy.prefetch_enabled():
+            return ""
         max_total = int(config.get("prefetch", "max_total_tokens", default=4500))
         anchor_budget = int(config.get("prefetch", "anchor_token_budget", default=200))
         peer_card_budget = int(config.get("prefetch", "honcho_card_token_budget", default=200))
@@ -576,6 +660,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return capped
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if self._blocked or not policy.prefetch_enabled():
+            return
         if self._honcho:
             try:
                 self._honcho.queue_prefetch(query, session_id=session_id)
@@ -838,6 +924,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        # Under approved writes a raw turn is not a write anyone approved.
+        if not self._may_ingest_turns():
+            return
         # Bump fact_store on user turn (cheap, exact-key dedup only).
         if self._fact_store and user_content.strip():
             try:
@@ -867,7 +956,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             try:
                 f.result(timeout=5)
             except Exception as exc:
-                logger.debug("mnemosyne: sync_turn fan-out failure: %s", exc)
+                logger.warning("mnemosyne: sync_turn fan-out failure: %s", exc)
 
     _SHINGLE_SIZE = 8        # words per shingle
     _SHINGLE_HIT_RATIO = 0.5 # fraction of a paragraph's shingles that must
@@ -940,7 +1029,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
         """Plan item 10 — built-in memory bridge.
 
         Mirror every memory(...) call from the user-facing tool into Hindsight
-        with `source:user_explicit` and a max-strength fact_store mark."""
+        with `source:user_explicit` and a max-strength fact_store mark.
+
+        Hermes calls this only for writes that committed, so it is the one
+        ingest path left under ``ingest.mode=approved_writes``."""
+        if self._blocked or not self._writes_allowed:
+            return
         # A write may invalidate the cached peer card (e.g. profile update).
         with self._cache_lock:
             self._peer_cache = None
@@ -948,13 +1042,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if self._honcho:
             try:
                 self._honcho.on_memory_write(action, target, content, metadata)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: Honcho on_memory_write failed: %s", exc)
         if self._hindsight:
             try:
                 self._hindsight.on_memory_write(action, target, content, metadata)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: Hindsight on_memory_write failed: %s", exc)
 
         if not content or not action:
             return
@@ -963,8 +1057,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
             if self._fact_store:
                 try:
                     self._fact_store.mark_forgotten(content)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("mnemosyne: fact_store mark_forgotten failed: %s", exc)
             if self._hindsight:
                 try:
                     self._hindsight.handle_tool_call(
@@ -974,16 +1068,16 @@ class MnemosyneMemoryProvider(MemoryProvider):
                             "tags": [f"forgotten:{today_iso()}", "source:built_in_remove"],
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("mnemosyne: hindsight tombstone for removed memory failed: %s", exc)
             return
 
         if action in ("add", "replace"):
             if self._fact_store:
                 try:
                     self._fact_store.force_strong(content, source="user_explicit")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("mnemosyne: fact_store force_strong failed: %s", exc)
             if self._hindsight:
                 try:
                     tags = [f"ts:{today_iso()}", "source:user_explicit",
@@ -995,7 +1089,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                         {"content": content, "tags": tags},
                     )
                 except Exception as exc:
-                    logger.debug("mnemosyne: hindsight retain mirror failed: %s", exc)
+                    logger.warning("mnemosyne: hindsight retain mirror failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Tools (plan item 6 — curated 6 with tightened descriptions)
@@ -1014,7 +1108,22 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "memory_reflect":   _REFLECT_SCHEMA,
             "memory_forget":    MEMORY_FORGET_SCHEMA,
         }
-        return [catalogue[n] for n in exposed if n in catalogue]
+        return [catalogue[n] for n in exposed if n in catalogue and self._tool_usable(n)]
+
+    # Tools that write to a backend directly, outside Hermes' write approval.
+    _DIRECT_WRITE_TOOLS = ("memory_conclude",)
+
+    def _tool_usable(self, tool_name: str) -> bool:
+        if self._blocked:
+            return False
+        if tool_name == "memory_forget":
+            return self._hindsight is not None and self._writes_allowed
+        backend = _TOOL_DISPATCH.get(tool_name, (None,))[0]
+        if backend is None or getattr(self, f"_{backend}", None) is None:
+            return False
+        if tool_name in self._DIRECT_WRITE_TOOLS:
+            return self._writes_allowed and not policy.approved_writes_only()
+        return True
 
     # Per-tool timeout (seconds), env-overridable — see config.py _ENV_MAP.
     # Defaults are generous (3-5 min for reasoning paths) so genuine deep
@@ -1041,6 +1150,14 @@ class MnemosyneMemoryProvider(MemoryProvider):
             return None
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        if self._blocked:
+            return json.dumps({"error": f"memory unavailable: {self._disabled_reason}"})
+        if not self._tool_usable(tool_name):
+            return json.dumps({"error": f"{tool_name} is not available in this configuration"})
+        if tool_name == "memory_profile" and args.get("card") is not None and (
+                policy.approved_writes_only() or not self._writes_allowed):
+            return json.dumps({"error": "profile updates go through the built-in memory tool "
+                                        "in this configuration; memory_profile is read-only"})
         if tool_name == "memory_forget":
             return self._handle_forget(args)
 
@@ -1133,28 +1250,32 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        if not self._may_ingest_turns():
+            return
         if self._honcho:
             try:
                 self._honcho.on_turn_start(turn_number, message, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         if self._hindsight:
             try:
                 self._hindsight.on_turn_start(turn_number, message, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self._may_ingest_turns():
+            return
         if self._honcho:
             try:
                 self._honcho.on_session_end(messages)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         if self._hindsight:
             try:
                 self._hindsight.on_session_end(messages)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
 
     def on_session_switch(
         self,
@@ -1169,52 +1290,58 @@ class MnemosyneMemoryProvider(MemoryProvider):
         with self._cache_lock:
             self._peer_cache = None
             self._anchor_cache = None
+        if self._blocked:
+            return
         if self._honcho:
             try:
                 self._honcho.on_session_switch(
                     new_session_id, parent_session_id=parent_session_id,
                     reset=reset, **kwargs,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         if self._hindsight:
             try:
                 self._hindsight.on_session_switch(
                     new_session_id, parent_session_id=parent_session_id,
                     reset=reset, **kwargs,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        if not self._may_ingest_turns():
+            return ""
         parts: List[str] = []
         if self._honcho:
             try:
                 s = self._honcho.on_pre_compress(messages) or ""
                 if s:
                     parts.append(s)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         if self._hindsight:
             try:
                 s = self._hindsight.on_pre_compress(messages) or ""
                 if s:
                     parts.append(s)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         return "\n\n".join(parts)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        if not self._may_ingest_turns():
+            return
         if self._honcho:
             try:
                 self._honcho.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
         if self._hindsight:
             try:
                 self._hindsight.on_delegation(task, result, child_session_id=child_session_id, **kwargs)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("mnemosyne: inner provider hook failed: %s", exc)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return []

@@ -231,7 +231,16 @@ def _cmd_anchor(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_import(args) -> int:
+    from . import policy
     from .importer import run_import
+    if policy.approved_writes_only():
+        print("Refusing to import: ingest.mode=approved_writes keeps raw session "
+              "transcripts out of the backends.", file=sys.stderr)
+        return 2
+    if policy.scope_mode() == policy.SCOPE_CHAT:
+        print("Refusing to import: scope.mode=chat, and the importer would put every "
+              "chat's transcripts into one bank.", file=sys.stderr)
+        return 2
     provider = _make_hindsight()
     if provider is None:
         print("Hindsight is not available — install via `hermes memory setup`.",
@@ -271,8 +280,13 @@ def _cmd_import(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_forget(args) -> int:
+    from . import policy
     from .fact_store import FactStore
     from .forget import forget_by_query
+    if policy.scope_mode() == policy.SCOPE_CHAT:
+        print("Refusing to forget from the CLI: scope.mode=chat keeps one bank per chat; "
+              "use memory_forget from inside the chat.", file=sys.stderr)
+        return 2
 
     provider = _make_hindsight()
     if provider is None:
