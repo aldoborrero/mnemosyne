@@ -103,6 +103,12 @@ def register_cli(subparser) -> None:
     sub.add_parser("honcho-quiet",
                    help="Switch all Honcho hosts to recallMode=tools (disable noisy auto-inject)")
 
+    sub.add_parser("reconcile",
+                   help="approved_writes: make the backends match MEMORY.md/USER.md now")
+    p_purge = sub.add_parser("purge",
+                             help="approved_writes: delete everything this profile's namespace holds")
+    p_purge.add_argument("--yes", action="store_true", help="Required: confirm the purge")
+
     subparser.set_defaults(func=mnemosyne_command)
 
 
@@ -118,6 +124,8 @@ def mnemosyne_command(args) -> int:
         return _cmd_forget(args)
     if action == "honcho-quiet":
         return _cmd_honcho_quiet()
+    if action in ("reconcile", "purge"):
+        return _cmd_approved(action, args)
     print(f"Unknown action: {action}", file=sys.stderr)
     return 2
 
@@ -230,17 +238,51 @@ def _cmd_anchor(args) -> int:
 # import
 # ---------------------------------------------------------------------------
 
-def _cmd_import(args) -> int:
+def _refuse_under_approved(what: str) -> bool:
     from . import policy
-    from .importer import run_import
     if policy.approved_writes_only():
-        print("Refusing to import: ingest.mode=approved_writes keeps raw session "
-              "transcripts out of the backends.", file=sys.stderr)
+        print(f"Refusing {what}: ingest.mode=approved_writes keeps the backends to the approved "
+              "entries of MEMORY.md/USER.md; edit those through Hermes' memory tool.", file=sys.stderr)
+        return True
+    return False
+
+
+def _cmd_approved(action: str, args) -> int:
+    from . import policy
+    if not policy.approved_writes_only():
+        print(f"`{action}` applies to ingest.mode=approved_writes only.", file=sys.stderr)
         return 2
-    if policy.scope_mode() == policy.SCOPE_CHAT:
-        print("Refusing to import: scope.mode=chat, and the importer would put every "
-              "chat's transcripts into one bank.", file=sys.stderr)
+    if action == "purge" and not getattr(args, "yes", False):
+        print("Refusing to purge without --yes.", file=sys.stderr)
         return 2
+    from .approved import ApprovedMemoryProvider
+    try:
+        from hermes_constants import get_hermes_home
+        home = str(get_hermes_home())
+    except Exception:
+        home = str(config._hermes_home())
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        identity = get_active_profile_name()
+    except Exception:
+        identity = ""
+    provider = ApprovedMemoryProvider()
+    provider.initialize("mnemosyne-cli", hermes_home=home, agent_identity=identity,
+                        platform="cli", agent_context="primary")
+    if provider._blocked:
+        print(f"Memory unavailable: {provider._disabled_reason}", file=sys.stderr)
+        return 1
+    provider.flush()
+    result = provider.purge() if action == "purge" else provider.reconcile_now()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    provider.shutdown()
+    return 0
+
+
+def _cmd_import(args) -> int:
+    if _refuse_under_approved("to import session transcripts"):
+        return 2
+    from .importer import run_import
     provider = _make_hindsight()
     if provider is None:
         print("Hindsight is not available — install via `hermes memory setup`.",
@@ -280,13 +322,10 @@ def _cmd_import(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_forget(args) -> int:
-    from . import policy
+    if _refuse_under_approved("to forget from the CLI"):
+        return 2
     from .fact_store import FactStore
     from .forget import forget_by_query
-    if policy.scope_mode() == policy.SCOPE_CHAT:
-        print("Refusing to forget from the CLI: scope.mode=chat keeps one bank per chat; "
-              "use memory_forget from inside the chat.", file=sys.stderr)
-        return 2
 
     provider = _make_hindsight()
     if provider is None:

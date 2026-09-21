@@ -18,6 +18,7 @@ provides_tools:
   - memory_recall
   - memory_reflect
   - memory_forget
+  - memory_read      # ingest.mode=approved_writes with the OpenViking backend
 
 pip_dependencies:
   - honcho-ai

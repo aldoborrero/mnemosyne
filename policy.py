@@ -1,17 +1,14 @@
-"""Ingest, scope and backend policy.
+"""Which provider runs, and what the approved-writes provider may do.
 
-Three independent settings decide what Mnemosyne may store and where:
+``ingest.mode=turns`` (the default) keeps the Honcho + Hindsight composite,
+fed by every conversation turn. ``ingest.mode=approved_writes`` runs
+``ApprovedMemoryProvider`` instead: its backends hold only the entries of
+Hermes' built-in memory files, which ``memory.write_approval`` gates.
 
-* ``ingest.mode`` — ``turns`` feeds every conversation turn to the inner
-  providers (their LLM extractors run on raw transcripts). ``approved_writes``
-  feeds them only through ``on_memory_write``, which Hermes calls after a
-  built-in ``memory`` tool write has committed — i.e. after
-  ``memory.write_approval`` let it through.
-* ``scope.mode`` — ``none`` keeps one memory per install. ``chat`` keys memory
-  by the gateway chat (platform + chat id from Hermes' ``initialize`` kwargs),
-  so what is stored in one room is never recalled in another.
-* ``backends`` — which inner providers are loaded.
-
+Isolation under approved writes is per Hermes profile. Built-in memory is per
+profile and injected into every session of it, so a profile is the smallest
+unit whose members can be kept apart; one profile per audience, each with its
+own backend credentials, is how rooms with different members are separated.
 Unknown values fall back to the stricter option.
 """
 
@@ -21,7 +18,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import config
 
@@ -29,109 +26,86 @@ logger = logging.getLogger(__name__)
 
 INGEST_TURNS = "turns"
 INGEST_APPROVED_WRITES = "approved_writes"
-SCOPE_NONE = "none"
-SCOPE_CHAT = "chat"
-KNOWN_BACKENDS = ("honcho", "hindsight", "openviking")
+APPROVED_BACKENDS = ("openviking", "hindsight")
 
-# Backends whose data can be partitioned per chat. Honcho keeps a user model
-# across sessions, so chat scope refuses to run with it.
-CHAT_SCOPABLE_BACKENDS = ("hindsight", "openviking")
-
-# Backends that ingest on their own under approved_writes. Honcho uploads
-# MEMORY.md/USER.md/SOUL.md as messages on a new session, and its server-side
-# deriver turns them into LLM-written conclusions.
-UNGATEABLE_BACKENDS = ("honcho",)
-
-# agent_context values for which providers must not write (Hermes sends cron
-# and subagent; honcho also treats flush agents this way).
+# agent_context values whose sessions must not write (Hermes sends cron and
+# subagent; Honcho also treats flush agents this way).
 _NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
 
 
-def ingest_mode() -> str:
-    mode = str(config.get("ingest", "mode", default=INGEST_TURNS) or "").strip()
+def ingest_mode(home: Optional[Path] = None) -> str:
+    mode = str(config.get("ingest", "mode", default=INGEST_TURNS, home=home) or "").strip()
     if mode in (INGEST_TURNS, INGEST_APPROVED_WRITES):
         return mode
     logger.warning("mnemosyne: unknown ingest.mode %r — using %s", mode, INGEST_APPROVED_WRITES)
     return INGEST_APPROVED_WRITES
 
 
-def approved_writes_only() -> bool:
-    return ingest_mode() == INGEST_APPROVED_WRITES
+def approved_writes_only(home: Optional[Path] = None) -> bool:
+    return ingest_mode(home) == INGEST_APPROVED_WRITES
 
 
-def scope_mode() -> str:
-    mode = str(config.get("scope", "mode", default=SCOPE_NONE) or "").strip()
-    if mode in (SCOPE_NONE, SCOPE_CHAT):
-        return mode
-    logger.warning("mnemosyne: unknown scope.mode %r — using %s", mode, SCOPE_CHAT)
-    return SCOPE_CHAT
+@dataclass(frozen=True)
+class ApprovedPolicy:
+    """Approved-writes settings, read once per provider."""
+    backends: Tuple[str, ...]
+    rejected_backends: Tuple[str, ...]
+    prefetch: bool
+    reflect: bool
 
 
-def backends() -> List[str]:
-    raw = config.get("backends", default=list(KNOWN_BACKENDS))
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def approved_policy(home: Optional[Path] = None) -> ApprovedPolicy:
+    raw = config.get("approved", "backends", default=["openviking"], home=home)
     if isinstance(raw, str):
         raw = [part.strip() for part in raw.split(",")]
-    selected = [b for b in (raw or []) if b in KNOWN_BACKENDS]
-    unknown = [b for b in (raw or []) if b and b not in KNOWN_BACKENDS]
-    if unknown:
-        logger.warning("mnemosyne: ignoring unknown backends %s", unknown)
-    return list(dict.fromkeys(selected))
+    names = [str(b).strip() for b in (raw or []) if str(b).strip()]
+    return ApprovedPolicy(
+        backends=tuple(dict.fromkeys(b for b in names if b in APPROVED_BACKENDS)),
+        rejected_backends=tuple(b for b in names if b not in APPROVED_BACKENDS),
+        prefetch=_as_bool(config.get("approved", "prefetch", default=False, home=home)),
+        reflect=_as_bool(config.get("approved", "reflect", default=False, home=home)),
+    )
 
 
-def prefetch_enabled() -> bool:
-    return bool(config.get("prefetch", "enabled", default=True))
+def approved_problem(p: ApprovedPolicy) -> Optional[str]:
+    """Why the approved-writes provider cannot run with these settings, or None."""
+    if p.rejected_backends:
+        return (f"approved.backends lists {', '.join(p.rejected_backends)}; only "
+                f"{', '.join(APPROVED_BACKENDS)} can be limited to approved entries")
+    if not p.backends:
+        return "approved.backends is empty"
+    return None
 
 
 def writes_allowed(agent_context: str) -> bool:
     return (agent_context or "primary") not in _NO_WRITE_CONTEXTS
 
 
-def chat_scope_key(platform: str, chat_id: str) -> Optional[str]:
-    """Scope key for a gateway chat; None when a part is missing or for the CLI."""
-    platform = (platform or "").strip()
-    chat_id = (chat_id or "").strip()
-    if not platform or not chat_id or platform == "cli":
-        return None
-    return f"{platform}:{chat_id}"
+def namespace(agent_identity: str, hermes_home: str) -> str:
+    """Stable, id-safe namespace for one Hermes profile."""
+    key = f"{agent_identity or 'default'}:{Path(hermes_home).resolve()}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
-def scope_slug(scope_key: str) -> str:
-    """Stable, filesystem- and bank-id-safe identifier for a scope key."""
-    return hashlib.sha256(scope_key.encode("utf-8")).hexdigest()[:16]
+def entry_id(text: str) -> str:
+    """Content-derived id of one built-in memory entry."""
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
 
 
-def scope_dir(scope_key: str) -> Path:
-    return config.plugin_dir() / "scopes" / scope_slug(scope_key)
+def is_cloud_hindsight(url: str) -> bool:
+    return "hindsight.vectorize.io" in (url or "").lower()
 
 
-@dataclass(frozen=True)
-class Policy:
-    """Settings read once per provider, so a session cannot change mode midway."""
-    approved_writes_only: bool
-    scope_mode: str
-    backends: tuple
-    prefetch_enabled: bool
-
-
-def snapshot() -> Policy:
-    return Policy(approved_writes_only=approved_writes_only(), scope_mode=scope_mode(),
-                  backends=tuple(backends()), prefetch_enabled=prefetch_enabled())
-
-
-def ingest_problem(selected_backends: List[str]) -> Optional[str]:
-    """Why approved_writes cannot run with these backends, or None if it can."""
-    ungated = [b for b in selected_backends if b in UNGATEABLE_BACKENDS]
-    if ungated:
-        return (f"ingest.mode=approved_writes cannot stop {', '.join(ungated)} from ingesting "
-                f"on its own; remove it from backends")
-    return None
-
-
-def chat_scope_problem(selected_backends: List[str]) -> Optional[str]:
-    """Why chat scope cannot run with these backends, or None if it can."""
-    unscopable = [b for b in selected_backends if b not in CHAT_SCOPABLE_BACKENDS]
-    if unscopable:
-        return f"scope.mode=chat cannot partition {', '.join(unscopable)}; set backends to {list(CHAT_SCOPABLE_BACKENDS)}"
-    if not selected_backends:
-        return "scope.mode=chat needs at least one backend"
-    return None
+def describe() -> List[str]:
+    """Human-readable summary of the approved policy, for `hermes mnemosyne status`."""
+    p = approved_policy()
+    return [f"ingest.mode:         {ingest_mode()}",
+            f"approved.backends:   {', '.join(p.backends) or '-'}",
+            f"approved.prefetch:   {p.prefetch}",
+            f"approved.reflect:    {p.reflect}"]

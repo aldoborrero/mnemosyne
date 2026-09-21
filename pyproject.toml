@@ -29,7 +29,8 @@ Repository = "https://github.com/johnnykor82/mnemosyne"
 # Flat layout — all .py files live at the package root, plugin is discovered
 # by Hermes via plugin.yaml and the `register_memory_provider` hook in __init__.py.
 py-modules = [
-    "cli", "config", "conflict", "dedup", "fact_store", "openviking_store", "policy",
+    "approved", "cli", "config", "conflict", "dedup", "fact_store", "hindsight_store",
+    "memory_files", "openviking_store", "policy", "reconcile",
     "forget", "importer", "recovery",
 ]
 
