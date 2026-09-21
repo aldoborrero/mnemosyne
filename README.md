@@ -102,23 +102,29 @@ By default Mnemosyne feeds every conversation turn to both inner providers and k
 |---|---|---|---|
 | `ingest.mode` | `MNEMOSYNE_INGEST_MODE` | `turns` (default), `approved_writes` | `approved_writes` stops `sync_turn`, `on_turn_start`, `on_session_end`, `on_pre_compress` and `on_delegation` from reaching the backends, skips startup recovery, makes the importer refuse, hides `memory_conclude` and makes `memory_profile` read-only. The only ingest path left is `on_memory_write`, which Hermes calls after a built-in `memory` tool write committed — so with `memory.write_approval: true` in Hermes, nothing reaches the backends that a human did not approve. |
 | `scope.mode` | `MNEMOSYNE_SCOPE_MODE` | `none` (default), `chat` | `chat` keys memory by the gateway chat (platform + chat id from Hermes' session identity, never from a tool argument): a Hindsight bank `<bank>-<hash>` and a `fact_store.db` under `scopes/<hash>/` per chat, so what one room stores is never recalled in another. Sessions without a chat id (CLI, cron) get no memory at all, and chat scope refuses to run with Honcho, whose user model spans chats. Recovery, the importer and CLI `forget` are off in this mode. |
-| `backends` | `MNEMOSYNE_BACKENDS` | `["honcho", "hindsight"]` (default), `["hindsight"]` | Which inner providers load; tools and availability follow. |
+| `backends` | `MNEMOSYNE_BACKENDS` | any of `honcho`, `hindsight`, `openviking`; default `["honcho", "hindsight"]` | Which backends load; tools and availability follow. |
 | `prefetch.enabled` | `MNEMOSYNE_PREFETCH_ENABLED` | `true` (default), `false` | `false` injects nothing per turn; recall happens only when the agent calls `memory_recall`. |
 
 Unknown values fall back to the stricter option. Cron and subagent sessions (Hermes' `agent_context`) never write.
+
+### OpenViking backend
+
+With `openviking` in `backends`, every committed built-in memory write is stored as a plain file at `viking://user/<space>/memories/mnemosyne/<scope>/<target>/mem_<id>.md`, where `<scope>` is the chat scope hash (or `global`) and `<target>` is `memory` or `user`. A `replace` writes the new text and deletes the file holding the old one; a `remove` deletes the file whose content matches exactly. `memory_recall` searches only below that root and returns the files' own text (not the server's generated abstracts) with their URIs, and `memory_read` reads one of those files; results and URIs outside the root are refused.
+
+Mnemosyne uses the Hermes OpenViking plugin's HTTP client and connection settings (`OPENVIKING_*`, `hermes memory setup`) but not its provider: that provider uploads every turn and commits sessions — at session end, at startup for pending sessions and from an `atexit` hook — and each commit makes the OpenViking server extract memories with its own LLM. Mnemosyne never calls the session endpoints, so this backend receives approved writes only, whatever `ingest.mode` says. `memory_forget` still needs Hindsight; with OpenViking alone, removing a memory goes through the built-in `memory` tool.
 
 A locked-down multi-room setup:
 
 ```json
 {
-  "backends": ["hindsight"],
+  "backends": ["openviking"],
   "ingest": {"mode": "approved_writes"},
   "scope": {"mode": "chat"},
   "prefetch": {"enabled": false}
 }
 ```
 
-with `memory.write_approval: true` in the Hermes config. Chat scope re-points Hindsight's resolved bank after its `initialize()` because `bank_id_template` has no chat placeholder; if that bank id cannot be read or set, the session runs without memory rather than with a shared bank.
+with `memory.write_approval: true` in the Hermes config; add `"hindsight"` to `backends` for its entity graph and `memory_reflect`. Chat scope re-points Hindsight's resolved bank after its `initialize()` because `bank_id_template` has no chat placeholder; if that bank id cannot be read or set, the session runs without memory rather than with a shared bank.
 
 ## Tools exposed to the LLM
 
@@ -127,9 +133,10 @@ with `memory.write_approval: true` in the Hermes config. Chat scope re-points Hi
 | `memory_profile` | Read or update the user's profile card (name, role, communication style, stable preferences). Routes to Honcho. |
 | `memory_reasoning` | Questions *about the user as a person* — style, habits, behavioural patterns, what works best with them. Routes to Honcho. |
 | `memory_conclude` | Record a stable user-related conclusion (preference, habit, style). Routes to Honcho. |
-| `memory_recall` | **The main long-term memory tool.** "Do you remember when…", "we discussed this", multi-strategy semantic + entity-graph search over all past conversations. Routes to Hindsight. |
+| `memory_recall` | **The main long-term memory tool.** "Do you remember when…", "we discussed this", multi-strategy semantic + entity-graph search over all past conversations. Searches OpenViking and/or Hindsight, whichever are enabled. |
 | `memory_reflect` | LLM synthesis across past-conversation facts — summaries spanning multiple sources ("what did we conclude about X?"). Routes to Hindsight. |
 | `memory_forget` | Explicit forgetting via signature soft-delete. Implemented inside the composite layer. |
+| `memory_read` | Full text of one OpenViking memory file by the URI `memory_recall` returned, within the current scope. |
 
 ## Hooks
 
