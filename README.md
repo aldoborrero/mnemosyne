@@ -94,6 +94,32 @@ Plugin-internal storage:
 
 Both are gitignored — they are local runtime state, not part of the plugin.
 
+## Ingest, scope and backends
+
+By default Mnemosyne feeds every conversation turn to both inner providers and keeps one memory per install. Three settings (in `config.json` or the matching env var) tighten that for deployments where memory writes need a human's approval, or where one agent serves several rooms whose members differ.
+
+| Setting | Env var | Values | Effect |
+|---|---|---|---|
+| `ingest.mode` | `MNEMOSYNE_INGEST_MODE` | `turns` (default), `approved_writes` | `approved_writes` stops `sync_turn`, `on_turn_start`, `on_session_end`, `on_pre_compress` and `on_delegation` from reaching the backends, skips startup recovery, makes the importer refuse, hides `memory_conclude` and makes `memory_profile` read-only. The only ingest path left is `on_memory_write`, which Hermes calls after a built-in `memory` tool write committed — so with `memory.write_approval: true` in Hermes, nothing reaches the backends that a human did not approve. |
+| `scope.mode` | `MNEMOSYNE_SCOPE_MODE` | `none` (default), `chat` | `chat` keys memory by the gateway chat (platform + chat id from Hermes' session identity, never from a tool argument): a Hindsight bank `<bank>-<hash>` and a `fact_store.db` under `scopes/<hash>/` per chat, so what one room stores is never recalled in another. Sessions without a chat id (CLI, cron) get no memory at all, and chat scope refuses to run with Honcho, whose user model spans chats. Recovery, the importer and CLI `forget` are off in this mode. |
+| `backends` | `MNEMOSYNE_BACKENDS` | `["honcho", "hindsight"]` (default), `["hindsight"]` | Which inner providers load; tools and availability follow. |
+| `prefetch.enabled` | `MNEMOSYNE_PREFETCH_ENABLED` | `true` (default), `false` | `false` injects nothing per turn; recall happens only when the agent calls `memory_recall`. |
+
+Unknown values fall back to the stricter option. Cron and subagent sessions (Hermes' `agent_context`) never write.
+
+A locked-down multi-room setup:
+
+```json
+{
+  "backends": ["hindsight"],
+  "ingest": {"mode": "approved_writes"},
+  "scope": {"mode": "chat"},
+  "prefetch": {"enabled": false}
+}
+```
+
+with `memory.write_approval: true` in the Hermes config. Chat scope re-points Hindsight's resolved bank after its `initialize()` because `bank_id_template` has no chat placeholder; if that bank id cannot be read or set, the session runs without memory rather than with a shared bank.
+
 ## Tools exposed to the LLM
 
 | Tool | Purpose |
