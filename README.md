@@ -167,6 +167,7 @@ Python implementation lives in `src/mnemosyne/`, with tests in `tests/`:
 src/mnemosyne/
   __init__.py       # public provider exports
   provider.py       # composite provider and registration policy
+  tool_schemas.py   # composite tool definitions and routing metadata
   commands.py       # hermes mnemosyne subcommands
   approved.py       # approved-writes provider
   ...               # configuration, stores and memory helpers

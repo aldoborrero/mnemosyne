@@ -10,6 +10,7 @@ Mnemosyne is a Hermes Agent memory plugin. It is consumed as a **directory** at
 | `__init__.py` `cli.py` | thin Hermes directory/CLI discovery adapters; keep these at the root |
 | `src/mnemosyne/__init__.py` | public provider exports for the Python package |
 | `src/mnemosyne/provider.py` | `MnemosyneMemoryProvider` (Honcho + Hindsight) and registration of the provider selected by policy |
+| `src/mnemosyne/tool_schemas.py` | composite tool schemas, default exposure order, dispatch table and tool configuration constants; execution stays in the provider |
 | `src/mnemosyne/commands.py` | `hermes mnemosyne …` subcommands |
 | `src/mnemosyne/` | all implementation modules, using package-relative imports |
 | `src/mnemosyne/approved.py` `src/mnemosyne/policy.py` | the approved-writes provider, and which provider runs and what it may do |

@@ -32,12 +32,19 @@ from . import config
 from .conflict import is_contradiction, label_pair
 from .fact_store import FactStore, today_iso
 from .forget import (
-    MEMORY_FORGET_SCHEMA,
     forget_by_query,
     is_forgotten as _is_forgotten,
     _write_tombstone,
 )
 from .recovery import initialize_cursor_if_missing, replay_missed
+from .tool_schemas import (
+    DEFAULT_TOOL_NAMES,
+    RECALL_QUERY_MAX_CHARS,
+    TOOL_DISPATCH,
+    TOOL_SCHEMAS,
+    TOOL_TIMEOUT_KEYS,
+    WRITE_TOOLS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,129 +98,10 @@ def _spawn_tombstone_writer(hindsight_provider, texts, when: str) -> None:
         logger.debug("mnemosyne: tombstone executor submit failed: %s", exc)
 
 
-# ---------------------------------------------------------------------------
-# Curated tool schemas (plan item 6 — tightened role descriptions)
-# ---------------------------------------------------------------------------
-
-_PROFILE_SCHEMA = {
-    "name": "memory_profile",
-    "description": (
-        "ONLY for the user's profile card: name, role, communication style, "
-        "stable preferences. Read or update. Do NOT use for general facts or "
-        "past-conversation history — for those use memory_recall."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "card": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "New card as a list of fact strings. Omit to read.",
-            },
-        },
-        "required": [],
-    },
-}
-
-_REASONING_SCHEMA = {
-    "name": "memory_reasoning",
-    "description": (
-        "ONLY questions about the user as a person: their style, habits, "
-        "behavioral patterns, what approach works best with them. NOT for "
-        "general knowledge and NOT for facts from past conversations — for "
-        "those use memory_recall or memory_reflect."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Natural-language question about the user as a person.",
-            },
-            "reasoning_level": {
-                "type": "string",
-                "enum": ["minimal", "low", "medium", "high", "max"],
-                "description": "Depth control. Omit for default (low).",
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-_CONCLUDE_SCHEMA = {
-    "name": "memory_conclude",
-    "description": (
-        "Record a stable user-related conclusion (preference, habit, style). "
-        "NOT for technical facts or events — those go through memory_recall."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "conclusion": {
-                "type": "string",
-                "description": "The conclusion to persist.",
-            },
-        },
-        "required": ["conclusion"],
-    },
-}
-
-_RECALL_SCHEMA = {
-    "name": "memory_recall",
-    "description": (
-        "FIRST CHOICE for 'do you remember when we did X?', 'we discussed this', "
-        "'how did we fix that before'. Multi-strategy search (semantic + entity "
-        "graph) over all past conversations. Returns relevant facts and "
-        "fragments. THIS IS THE MAIN LONG-TERM MEMORY TOOL."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to look for."},
-            "max_tokens": {
-                "type": "integer",
-                "description": "Token budget (default 800, max 4096).",
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-_REFLECT_SCHEMA = {
-    "name": "memory_reflect",
-    "description": (
-        "LLM synthesis across past-conversation facts. Use when you need a "
-        "summary spanning multiple sources ('what did we conclude about X?', "
-        "'what facts do we have on topic Y?'). NOT for questions about the "
-        "user as a person."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Natural-language question."},
-        },
-        "required": ["query"],
-    },
-}
-
-
-# Maps curated tool names → (inner_provider_attr, inner_tool_name).
-_TOOL_DISPATCH = {
-    "memory_profile": ("honcho", "honcho_profile"),
-    "memory_reasoning": ("honcho", "honcho_reasoning"),
-    "memory_conclude": ("honcho", "honcho_conclude"),
-    "memory_recall": ("hindsight", "hindsight_recall"),
-    "memory_reflect": ("hindsight", "hindsight_reflect"),
-}
-
-
 # agent_context values whose sessions must not write memory. Hermes passes
 # "cron" for scheduled jobs and "subagent" for delegate_task children, and
 # documents that providers skip writes for them; Honcho also skips "flush".
 _NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
-
-# Tools that write to a backend directly rather than through the bridge.
-_WRITE_TOOLS = ("memory_conclude", "memory_forget")
 
 
 def _truncate_to_chars(text: str, max_chars: int) -> str:
@@ -226,22 +114,16 @@ def _truncate_to_chars(text: str, max_chars: int) -> str:
     return cut + "\n…[truncated]"
 
 
-# Hindsight enforces "Query too long: N tokens exceeds maximum of 500".
-# 1500 chars ≈ 350-450 tokens (RU runs higher chars/token than EN); leaves
-# headroom for any query expansion Hindsight does internally.
-_RECALL_QUERY_MAX_CHARS = 1500
-
-
 def _truncate_recall_query(query: str) -> str:
     """Trim query so it never trips Hindsight's 500-token recall limit.
     Prefers to cut at a word boundary near the end."""
     if not query:
         return query
-    if len(query) <= _RECALL_QUERY_MAX_CHARS:
+    if len(query) <= RECALL_QUERY_MAX_CHARS:
         return query
-    cut = query[:_RECALL_QUERY_MAX_CHARS]
+    cut = query[:RECALL_QUERY_MAX_CHARS]
     last_space = cut.rfind(" ")
-    if last_space > _RECALL_QUERY_MAX_CHARS * 0.7:
+    if last_space > RECALL_QUERY_MAX_CHARS * 0.7:
         cut = cut[:last_space]
     return cut
 
@@ -1061,27 +943,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
         exposed = config.get(
             "tools",
             "expose",
-            default=[
-                "memory_profile",
-                "memory_reasoning",
-                "memory_conclude",
-                "memory_recall",
-                "memory_reflect",
-                "memory_forget",
-            ],
+            default=list(DEFAULT_TOOL_NAMES),
         )
-        catalogue = {
-            "memory_profile": _PROFILE_SCHEMA,
-            "memory_reasoning": _REASONING_SCHEMA,
-            "memory_conclude": _CONCLUDE_SCHEMA,
-            "memory_recall": _RECALL_SCHEMA,
-            "memory_reflect": _REFLECT_SCHEMA,
-            "memory_forget": MEMORY_FORGET_SCHEMA,
-        }
         return [
-            catalogue[n]
+            TOOL_SCHEMAS[n]
             for n in exposed
-            if n in catalogue and (self._writes_allowed or n not in _WRITE_TOOLS)
+            if n in TOOL_SCHEMAS and (self._writes_allowed or n not in WRITE_TOOLS)
         ]
 
     # Per-tool timeout (seconds), env-overridable — see config.py _ENV_MAP.
@@ -1090,15 +957,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # if a specific call misbehaves.
     @staticmethod
     def _timeout_for(tool_name: str) -> Optional[float]:
-        key_map = {
-            "memory_recall": "recall",
-            "memory_reasoning": "reasoning",
-            "memory_reflect": "reflect",
-            "memory_profile": "profile",
-            "memory_conclude": "conclude",
-            "memory_forget": "forget",
-        }
-        key = key_map.get(tool_name)
+        key = TOOL_TIMEOUT_KEYS.get(tool_name)
         if key is None:
             return None
         try:
@@ -1114,7 +973,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._writes_allowed and (
-            tool_name in _WRITE_TOOLS
+            tool_name in WRITE_TOOLS
             or (tool_name == "memory_profile" and args.get("card"))
         ):
             return json.dumps(
@@ -1126,7 +985,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if tool_name == "memory_forget":
             return self._handle_forget(args)
 
-        mapping = _TOOL_DISPATCH.get(tool_name)
+        mapping = TOOL_DISPATCH.get(tool_name)
         if not mapping:
             raise NotImplementedError(f"mnemosyne does not handle tool {tool_name}")
         provider_attr, inner_name = mapping
@@ -1139,7 +998,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # comes back as 400 Bad Request from Hindsight.
         if tool_name in ("memory_recall", "memory_reflect"):
             q = args.get("query")
-            if isinstance(q, str) and len(q) > _RECALL_QUERY_MAX_CHARS:
+            if isinstance(q, str) and len(q) > RECALL_QUERY_MAX_CHARS:
                 args = dict(args)
                 args["query"] = _truncate_recall_query(q)
                 logger.debug(
