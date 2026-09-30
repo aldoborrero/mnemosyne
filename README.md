@@ -161,6 +161,32 @@ Your runtime data (`fact_store.db`, `recovery_cursor.json`) is gitignored and su
 
 ## Contributing
 
+Python implementation lives in `src/mnemosyne/`, with tests in `tests/`:
+
+```text
+src/mnemosyne/
+  __init__.py       # public provider exports
+  provider.py       # composite provider and registration policy
+  commands.py       # hermes mnemosyne subcommands
+  approved.py       # approved-writes provider
+  ...               # configuration, stores and memory helpers
+tests/
+__init__.py         # Hermes directory discovery adapter
+cli.py              # Hermes CLI discovery adapter
+plugin.yaml
+pyproject.toml
+```
+
+The two root Python files are small adapters required by Hermes' directory
+loader. Keep business logic inside the package. Both a Git checkout and the Nix
+output include `src/`; installation into Hermes still uses the plugin directory
+and `./install.sh`, without requiring a wheel or changes to `PYTHONPATH`.
+`pyproject.toml` discovers the Python package under `src/` for packaging tools.
+
+Use `nix develop` (or `direnv allow`), then `just test` to run the suite and
+`just check` for the complete CI gate. Tests import the source package normally
+and separately exercise Hermes' provider-first and CLI-first discovery paths.
+
 Contributions and bug reports are very welcome. Standard GitHub flow:
 
 1. **Issues** — open an issue describing the problem or feature idea.

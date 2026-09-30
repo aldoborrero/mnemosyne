@@ -14,12 +14,12 @@ import types
 import pytest
 from conftest import mnemosyne
 
-from _hermes_user_memory.mnemosyne import approved as approved_mod
-from _hermes_user_memory.mnemosyne import cli, memory_files, policy
-from _hermes_user_memory.mnemosyne.approved import ApprovedMemoryProvider
-from _hermes_user_memory.mnemosyne.hindsight_store import HindsightStore
-from _hermes_user_memory.mnemosyne.openviking_store import OpenVikingStore
-from _hermes_user_memory.mnemosyne.reconcile import reconcile
+from mnemosyne import approved as approved_mod
+from mnemosyne import commands as cli, memory_files, policy
+from mnemosyne.approved import ApprovedMemoryProvider
+from mnemosyne.hindsight_store import HindsightStore
+from mnemosyne.openviking_store import OpenVikingStore
+from mnemosyne.reconcile import reconcile
 
 DELIM = "\n§\n"
 ROOT = "viking://user/alice/memories/mnemosyne/ns1/"
@@ -408,7 +408,7 @@ def test_openviking_store_ids_writes_and_scope():
 
 
 def test_openviking_list_paginates(monkeypatch):
-    from _hermes_user_memory.mnemosyne import openviking_store
+    from mnemosyne import openviking_store
 
     monkeypatch.setattr(openviking_store, "_PAGE", 2)
     client = _VikingClient(files={ROOT + f"user/mem_{i}.md": "x" for i in range(5)})

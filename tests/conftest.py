@@ -1,19 +1,10 @@
-"""Test bootstrap for mnemosyne.
-
-Mnemosyne is a Hermes memory provider. Its __init__.py imports
-`agent.memory_provider.MemoryProvider` (a Hermes-internal base class) and
-expects to be loaded via the Hermes plugin discovery path. For pytest we
-stub `agent.memory_provider` *before* importing the plugin and then load
-the package directly via importlib so the relative imports inside the
-plugin still resolve."""
+"""Stub the Hermes base class before importing the source package."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import types
-from pathlib import Path
 from typing import Any, Dict
 
 
@@ -31,25 +22,8 @@ sys.modules.setdefault("agent", _agent_pkg)
 sys.modules.setdefault("agent.memory_provider", _mp_module)
 
 
-# 2. Load mnemosyne/__init__.py under its production package name
-#    `_hermes_user_memory.mnemosyne`. The parent package must exist in
-#    sys.modules BEFORE we exec the submodule, otherwise its `from . import`
-#    statements raise "attempted relative import with no known parent package".
-_PLUGIN_DIR = Path(__file__).resolve().parent.parent
-_PARENT_PKG = "_hermes_user_memory"
-_PKG_NAME = f"{_PARENT_PKG}.mnemosyne"
-if _PARENT_PKG not in sys.modules:
-    _parent = types.ModuleType(_PARENT_PKG)
-    _parent.__path__ = [str(_PLUGIN_DIR.parent)]
-    sys.modules[_PARENT_PKG] = _parent
-_SPEC = importlib.util.spec_from_file_location(
-    _PKG_NAME,
-    _PLUGIN_DIR / "__init__.py",
-    submodule_search_locations=[str(_PLUGIN_DIR)],
-)
-mnemosyne = importlib.util.module_from_spec(_SPEC)
-sys.modules[_PKG_NAME] = mnemosyne
-_SPEC.loader.exec_module(mnemosyne)
+# 2. Import normally; pytest adds src/ to the import path.
+from mnemosyne import provider as mnemosyne
 
 
 # 3. Fake inner providers — they record calls, sleep to emulate the real

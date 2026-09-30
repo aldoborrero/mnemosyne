@@ -7,13 +7,15 @@ Mnemosyne is a Hermes Agent memory plugin. It is consumed as a **directory** at
 
 | Path | What it is |
 | --- | --- |
-| `__init__.py` | the Hermes entry point: `MnemosyneMemoryProvider` (Honcho + Hindsight) or the approved-writes provider, per `policy.py` |
-| `cli.py` | `hermes mnemosyne …` subcommands |
-| `config.py` `conflict.py` `dedup.py` `fact_store.py` `forget.py` `importer.py` `recovery.py` | plugin internals, all package-relative imports |
-| `approved.py` `policy.py` | the approved-writes provider, and which provider runs and what it may do |
-| `memory_files.py` `reconcile.py` | Hermes' built-in memory files as the source of truth; making a backend hold exactly the approved entries |
-| `hindsight_store.py` `openviking_store.py` | backends for approved writes: one Hindsight document or one OpenViking file per entry |
-| `text_utils.py` | shared text normalisation for the similarity heuristics |
+| `__init__.py` `cli.py` | thin Hermes directory/CLI discovery adapters; keep these at the root |
+| `src/mnemosyne/__init__.py` | public provider exports for the Python package |
+| `src/mnemosyne/provider.py` | `MnemosyneMemoryProvider` (Honcho + Hindsight) and registration of the provider selected by policy |
+| `src/mnemosyne/commands.py` | `hermes mnemosyne …` subcommands |
+| `src/mnemosyne/` | all implementation modules, using package-relative imports |
+| `src/mnemosyne/approved.py` `src/mnemosyne/policy.py` | the approved-writes provider, and which provider runs and what it may do |
+| `src/mnemosyne/memory_files.py` `src/mnemosyne/reconcile.py` | Hermes' built-in memory files as the source of truth; making a backend hold exactly the approved entries |
+| `src/mnemosyne/hindsight_store.py` `src/mnemosyne/openviking_store.py` | backends for approved writes: one Hindsight document or one OpenViking file per entry |
+| `src/mnemosyne/text_utils.py` | shared text normalisation for the similarity heuristics |
 | `plugin.yaml` | Hermes plugin manifest (hooks, tool surface, pip deps) |
 | `install.sh` | installs `honcho-ai` + `hindsight-client` into the Hermes venv |
 | `tests/` | pytest suite; `conftest.py` stubs Hermes and both backends |
@@ -47,9 +49,11 @@ The two runtime dependencies, `honcho-ai` and `hindsight-client`, are **not in
 nixpkgs**. Nothing in this tree imports them directly: they are reached through
 Hermes (`plugins.memory.hindsight`) at runtime, `install.sh` puts them in the
 Hermes venv, and the test suite stubs them. That is why the Nix build needs only
-pytest, and why `package.nix` installs a plugin tree instead of a wheel — the
-flat `py-modules` layout in `pyproject.toml` would install `cli`, `config`, …
-as top-level modules that cannot resolve each other's relative imports.
+pytest, and why `package.nix` installs a plugin tree instead of a wheel. The
+tree must include both root adapters and `src/mnemosyne/`. `pyproject.toml`
+discovers the package under `src/`; tests use that package directly and cover
+Hermes' file-based discovery separately. The adapters preserve the package name
+chosen by Hermes, including names that isolate separate plugin sources.
 
 The formatter check runs inside `nix flake check` via `passthru.tests` (not
 `meta.tests`, which blueprint silently ignores). After touching

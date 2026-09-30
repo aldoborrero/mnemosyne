@@ -1,0 +1,476 @@
+"""CLI for mnemosyne — `hermes mnemosyne ...`.
+
+Subcommands:
+  status            Show provider availability and config summary
+  anchor edit       Open anchor_card.md in $EDITOR
+  anchor list       Print anchor_card.md contents
+  anchor add TEXT   Append a line to anchor_card.md
+  anchor remove TEXT  Remove first line containing TEXT
+  import [--days 90] [--min-turns 5]
+  forget QUERY [--yes]
+  honcho-quiet      Switch all Honcho hosts to recallMode=tools (kill noisy auto-inject)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from . import config
+
+
+def register_cli(subparser) -> None:
+    """Build the `hermes mnemosyne` argparse subcommand tree.
+
+    The hermes top-level CLI dispatches via ``args.func(args)``, so we MUST
+    call ``subparser.set_defaults(func=mnemosyne_command)`` — otherwise hermes
+    silently falls through to the root help when a sub-action is invoked.
+    """
+    sub = subparser.add_subparsers(dest="action", required=True)
+
+    sub.add_parser("status", help="Show mnemosyne status")
+
+    p_anchor = sub.add_parser("anchor", help="Manage anchor card")
+    p_anchor.add_argument("anchor_action", choices=["edit", "list", "add", "remove"])
+    p_anchor.add_argument("--text", help="Text for add/remove")
+
+    p_import = sub.add_parser("import", help="Bulk import past sessions to Hindsight")
+    p_import.add_argument("--days", type=int, default=None)
+    p_import.add_argument("--min-turns", type=int, default=None)
+
+    p_forget = sub.add_parser(
+        "forget", help="Mark memories matching a query as forgotten"
+    )
+    p_forget.add_argument("query")
+    p_forget.add_argument(
+        "--yes", action="store_true", help="Skip interactive confirmation"
+    )
+    p_forget.add_argument("--max-items", type=int, default=20)
+
+    sub.add_parser(
+        "honcho-quiet",
+        help="Switch all Honcho hosts to recallMode=tools (disable noisy auto-inject)",
+    )
+
+    sub.add_parser(
+        "reconcile",
+        help="approved_writes: make the backends match MEMORY.md/USER.md now",
+    )
+    p_purge = sub.add_parser(
+        "purge",
+        help="approved_writes: delete everything this profile's namespace holds",
+    )
+    p_purge.add_argument(
+        "--yes", action="store_true", help="Required: confirm the purge"
+    )
+
+    subparser.set_defaults(func=mnemosyne_command)
+
+
+def mnemosyne_command(args) -> int:
+    action = getattr(args, "action", None)
+    if action == "status":
+        return _cmd_status()
+    if action == "anchor":
+        return _cmd_anchor(args)
+    if action == "import":
+        return _cmd_import(args)
+    if action == "forget":
+        return _cmd_forget(args)
+    if action == "honcho-quiet":
+        return _cmd_honcho_quiet()
+    if action in ("reconcile", "purge"):
+        return _cmd_approved(action, args)
+    print(f"Unknown action: {action}", file=sys.stderr)
+    return 2
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+def _cmd_status() -> int:
+    print("Mnemosyne plugin status")
+    print(f"  Plugin dir: {config.plugin_dir()}")
+    print(
+        f"  Config:     {config.config_path()} {'(exists)' if config.config_path().exists() else '(default)'}"
+    )
+
+    # Inner provider availability
+    try:
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        h = HonchoMemoryProvider()
+        print(f"  Honcho:     available={h.is_available()}")
+    except Exception as e:
+        print(f"  Honcho:     load failed: {e}")
+
+    try:
+        from plugins.memory.hindsight import HindsightMemoryProvider
+
+        i = HindsightMemoryProvider()
+        print(f"  Hindsight:  available={i.is_available()}")
+    except Exception as e:
+        print(f"  Hindsight:  load failed: {e}")
+
+    # Local artefacts
+    fact_db = config.plugin_dir() / "fact_store.db"
+    anchor = _anchor_path()
+    rec_cur = config.plugin_dir() / "recovery_cursor.json"
+    imp_cur = config.plugin_dir() / "import_cursor.json"
+    print(f"  fact_store.db:       {'present' if fact_db.exists() else 'missing'}")
+    print(f"  anchor_card.md:      {'present' if anchor.exists() else 'missing'}")
+    print(f"  recovery_cursor:     {'present' if rec_cur.exists() else 'missing'}")
+    print(f"  import_cursor:       {'present' if imp_cur.exists() else 'missing'}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# anchor card
+# ---------------------------------------------------------------------------
+
+
+def _anchor_path() -> Path:
+    fn = config.get("anchor_card", "filename", default="anchor_card.md")
+    return config.plugin_dir() / fn
+
+
+def _ensure_anchor() -> Path:
+    p = _anchor_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.exists():
+        p.write_text(
+            "# Anchor card — pinned facts about the user\n"
+            "#\n"
+            "# Each non-comment line is one fact. Keep it short — the\n"
+            "# whole file is injected into every prefetch (budget ~200 tokens).\n"
+            "\n",
+            encoding="utf-8",
+        )
+    return p
+
+
+def _cmd_anchor(args) -> int:
+    sub = args.anchor_action
+    p = _ensure_anchor()
+    if sub == "edit":
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
+        return subprocess.call([editor, str(p)])
+    if sub == "list":
+        sys.stdout.write(p.read_text(encoding="utf-8"))
+        return 0
+    if sub == "add":
+        text = (args.text or "").strip()
+        if not text:
+            print("--text required for add", file=sys.stderr)
+            return 2
+        content = p.read_text(encoding="utf-8")
+        if not content.endswith("\n"):
+            content += "\n"
+        content += text + "\n"
+        p.write_text(content, encoding="utf-8")
+        print(f"Added: {text}")
+        return 0
+    if sub == "remove":
+        text = (args.text or "").strip()
+        if not text:
+            print("--text required for remove", file=sys.stderr)
+            return 2
+        lines = p.read_text(encoding="utf-8").splitlines()
+        kept = []
+        removed = False
+        for line in lines:
+            if not removed and text in line and not line.lstrip().startswith("#"):
+                removed = True
+                continue
+            kept.append(line)
+        if not removed:
+            print(f"No line containing: {text}", file=sys.stderr)
+            return 1
+        p.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        print(f"Removed first line containing: {text}")
+        return 0
+    print(f"Unknown anchor action: {sub}", file=sys.stderr)
+    return 2
+
+
+# ---------------------------------------------------------------------------
+# import
+# ---------------------------------------------------------------------------
+
+
+def _refuse_under_approved(what: str) -> bool:
+    from . import policy
+
+    if policy.approved_writes_only():
+        print(
+            f"Refusing {what}: ingest.mode=approved_writes keeps the backends to the approved "
+            "entries of MEMORY.md/USER.md; edit those through Hermes' memory tool.",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
+def _cmd_approved(action: str, args) -> int:
+    from . import policy
+
+    if not policy.approved_writes_only():
+        print(
+            f"`{action}` applies to ingest.mode=approved_writes only.", file=sys.stderr
+        )
+        return 2
+    if action == "purge" and not getattr(args, "yes", False):
+        print("Refusing to purge without --yes.", file=sys.stderr)
+        return 2
+    from .approved import ApprovedMemoryProvider
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = str(get_hermes_home())
+    except Exception:
+        home = str(config._hermes_home())
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        identity = get_active_profile_name()
+    except Exception:
+        identity = ""
+    provider = ApprovedMemoryProvider()
+    provider.initialize(
+        "mnemosyne-cli",
+        hermes_home=home,
+        agent_identity=identity,
+        platform="cli",
+        agent_context="primary",
+    )
+    if provider._blocked:
+        print(f"Memory unavailable: {provider._disabled_reason}", file=sys.stderr)
+        return 1
+    provider.flush()
+    result = provider.purge() if action == "purge" else provider.reconcile_now()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    provider.shutdown()
+    return 0
+
+
+def _cmd_import(args) -> int:
+    if _refuse_under_approved("to import session transcripts"):
+        return 2
+    from .importer import run_import
+
+    provider = _make_hindsight()
+    if provider is None:
+        print(
+            "Hindsight is not available — install via `hermes memory setup`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    def progress(stage, info):
+        if stage == "start":
+            print(
+                f"  → import {info['files']} files, {info['pairs']} turn pairs "
+                f"(last {info['days']} days, min {info['min_turns']} turns)"
+            )
+        elif stage == "checkpoint":
+            print(
+                f"    {info['file']}: {info['pairs_done']}/{info['pairs_total']} "
+                f"(total imported: {info['imported']})"
+            )
+        elif stage == "file_done":
+            print(
+                f"    ✓ {info['file']}  files {info['files_done']}/{info['files_total']}"
+            )
+        elif stage == "interrupted":
+            print(f"  Interrupted — imported {info['imported']} pairs so far.")
+
+    print("Mnemosyne bulk import → Hindsight")
+    result = run_import(
+        provider,
+        days=args.days,
+        min_turns=args.min_turns,
+        on_progress=progress,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    try:
+        provider.shutdown()
+    except Exception:
+        pass
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# forget
+# ---------------------------------------------------------------------------
+
+
+def _cmd_forget(args) -> int:
+    if _refuse_under_approved("to forget from the CLI"):
+        return 2
+    from .fact_store import FactStore
+    from .forget import forget_by_query
+
+    provider = _make_hindsight()
+    if provider is None:
+        print("Hindsight is not available.", file=sys.stderr)
+        return 1
+    fs = FactStore()
+
+    # Step 1 — preview. Pins the candidate list and hands back a token; the
+    # confirm below applies exactly that list, so the CLI and the
+    # memory_forget tool now share one code path and one semantics.
+    preview = forget_by_query(
+        fs,
+        provider,
+        args.query,
+        max_items=args.max_items,
+    )
+    if preview.get("error"):
+        print(json.dumps(preview, ensure_ascii=False, indent=2))
+        _shutdown(provider)
+        return 1
+
+    candidates = preview.get("candidates") or []
+    if not candidates:
+        print("Nothing matched — nothing forgotten.")
+        _shutdown(provider)
+        return 0
+
+    # Step 2 — pick. --yes takes the whole previewed list; otherwise ask and
+    # translate the answer into 1-based indices into that same list.
+    if args.yes:
+        indices = None
+    else:
+        indices = _interactive_select(candidates)
+        if not indices:
+            print("Nothing selected — nothing forgotten.")
+            _shutdown(provider)
+            return 0
+
+    result = forget_by_query(
+        fs,
+        provider,
+        args.query,
+        confirmed=True,
+        preview_token=preview.get("preview_token"),
+        indices=indices,
+        max_items=args.max_items,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _shutdown(provider)
+    return 0
+
+
+def _interactive_select(candidates):
+    """Show the pinned preview and return the 1-based indices to forget.
+
+    None means "all of them", [] means "none". Indices are positions in the
+    preview, which is exactly what forget_by_query applies them against.
+    """
+    print(f"\nFound {len(candidates)} candidate(s) to forget:")
+    for pos, c in enumerate(candidates, 1):
+        text = c.get("text", "") if isinstance(c, dict) else str(c)
+        idx = c.get("index", pos) if isinstance(c, dict) else pos
+        line = text.strip().replace("\n", " ")
+        if len(line) > 200:
+            line = line[:200] + "…"
+        print(f"  {idx}. {line}")
+    print()
+    choice = input("Forget all? [y/N/<comma-separated indices>] ").strip().lower()
+    if choice in ("y", "yes"):
+        return None
+    if choice in ("", "n", "no"):
+        return []
+    chosen = []
+    for tok in choice.split(","):
+        tok = tok.strip()
+        if tok.isdigit():
+            i = int(tok)
+            if 1 <= i <= len(candidates):
+                chosen.append(i)
+    return chosen
+
+
+def _shutdown(provider) -> None:
+    try:
+        provider.shutdown()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# honcho-quiet
+# ---------------------------------------------------------------------------
+
+
+def _cmd_honcho_quiet() -> int:
+    """Set recallMode: tools on every Honcho host. Kills noisy auto-inject."""
+    honcho_path = Path.home() / ".hermes" / "honcho.json"
+    if not honcho_path.exists():
+        print(f"Honcho config not found at {honcho_path}", file=sys.stderr)
+        return 1
+    try:
+        original_text = honcho_path.read_text(encoding="utf-8")
+        cfg = json.loads(original_text)
+    except Exception as exc:
+        print(f"Failed to read {honcho_path}: {exc}", file=sys.stderr)
+        return 1
+
+    changed = 0
+    for host_key, host_block in (cfg.get("hosts") or {}).items():
+        if not isinstance(host_block, dict):
+            continue
+        if host_block.get("recallMode") != "tools":
+            host_block["recallMode"] = "tools"
+            changed += 1
+
+    if changed == 0:
+        print("All Honcho hosts already use recallMode: tools.")
+        return 0
+
+    backup = honcho_path.with_suffix(".json.before-honcho-quiet")
+    backup.write_text(original_text, encoding="utf-8")
+    honcho_path.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"Updated {changed} host(s) in {honcho_path} → recallMode: tools")
+    print(f"Backup of original: {backup}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_hindsight():
+    try:
+        from plugins.memory.hindsight import HindsightMemoryProvider
+    except Exception as exc:
+        print(f"Hindsight plugin import failed: {exc}", file=sys.stderr)
+        return None
+    p = HindsightMemoryProvider()
+    if not p.is_available():
+        print(
+            "Hindsight reports is_available()=False. "
+            "Run `hermes memory setup` and pick hindsight.",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = str(get_hermes_home())
+    except Exception:
+        hermes_home = str(Path.home() / ".hermes")
+    p.initialize(session_id="cli-mnemosyne", hermes_home=hermes_home, platform="cli")
+    return p

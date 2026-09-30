@@ -69,7 +69,7 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 def _fetch_embeddings(texts: List[str], timeout: float) -> Optional[List[List[float]]]:
     """Call the OpenAI-compatible embeddings endpoint that Hindsight is
     already wired to (litellm @ localhost:8000 with Jina v5 by default,
-    see __init__.py:_inject_hindsight_routing_env).
+    see provider.py:_inject_hindsight_routing_env).
 
     Returns a list of vectors aligned with `texts`, or None on any error.
     """

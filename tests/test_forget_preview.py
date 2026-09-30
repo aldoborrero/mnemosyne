@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from _hermes_user_memory.mnemosyne import forget as forget_mod
-from _hermes_user_memory.mnemosyne.fact_store import FactStore
+from mnemosyne import forget as forget_mod
+from mnemosyne.fact_store import FactStore
 
 
 class _DriftingProvider:
@@ -168,7 +168,7 @@ def test_confirm_registers_a_semantic_signature(store):
 def test_signature_tokens_match_the_read_side_filter_tokenizer(store):
     """The signature is built and matched with the same tokenizer, so the
     containment filter never scores across two vocabularies."""
-    import _hermes_user_memory.mnemosyne as pkg
+    import mnemosyne as pkg
     import inspect
 
     src = inspect.getsource(pkg.MnemosyneMemoryProvider._filter_forgotten)

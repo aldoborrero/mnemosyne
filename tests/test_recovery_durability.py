@@ -12,7 +12,7 @@ import warnings
 
 import pytest
 
-from _hermes_user_memory.mnemosyne import recovery
+from mnemosyne import recovery
 
 
 class _FlakyProvider:

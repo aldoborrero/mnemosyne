@@ -20,27 +20,10 @@ Homepage = "https://github.com/johnnykor82/mnemosyne"
 Repository = "https://github.com/johnnykor82/mnemosyne"
 "Bug Tracker" = "https://github.com/johnnykor82/mnemosyne/issues"
 
-[tool.setuptools]
-# Flat layout — all .py files live at the package root, plugin is discovered
-# by Hermes via plugin.yaml and the `register_memory_provider` hook in __init__.py.
-py-modules = [
-  "approved",
-  "cli",
-  "config",
-  "conflict",
-  "dedup",
-  "fact_store",
-  "hindsight_store",
-  "memory_files",
-  "openviking_store",
-  "policy",
-  "reconcile",
-  "forget",
-  "importer",
-  "recovery",
-]
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mnemosyne*"]
 
 # Note: pytest config lives in tests/pytest.ini (not here). Putting it there
 # pins pytest's rootdir to tests/, preventing it from walking up to the plugin
-# root and trying to import __init__.py — which uses package-relative imports
-# resolvable only under the Hermes plugin loader.
+# root and importing the Hermes directory adapter as the source package.

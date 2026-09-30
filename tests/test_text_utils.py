@@ -7,7 +7,7 @@ containment threshold ended up being scored across two vocabularies.
 
 from __future__ import annotations
 
-from _hermes_user_memory.mnemosyne import conflict, dedup, forget, text_utils
+from mnemosyne import conflict, dedup, forget, text_utils
 
 
 def test_dedup_and_forget_tokenise_identically():
@@ -64,7 +64,7 @@ def test_dedup_fallback_defaults_match_config_defaults():
     """The inline `default=` fallbacks disagreed with config.py's _DEFAULTS."""
     import inspect
 
-    from _hermes_user_memory.mnemosyne import config
+    from mnemosyne import config
 
     src = inspect.getsource(dedup.cluster_lines)
     defaults = config._DEFAULTS["prefetch"]

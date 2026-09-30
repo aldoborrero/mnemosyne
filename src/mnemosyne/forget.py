@@ -183,7 +183,7 @@ def _apply_forget(
     async_ts = bool(config.get("forget", "write_tombstones_async", default=True))
     if write_ts and hindsight_provider is not None and chosen_texts:
         if async_ts:
-            from . import _spawn_tombstone_writer  # late import — set in __init__.py
+            from .provider import _spawn_tombstone_writer  # late import avoids a cycle
 
             _spawn_tombstone_writer(hindsight_provider, chosen_texts, audit_now)
         else:
