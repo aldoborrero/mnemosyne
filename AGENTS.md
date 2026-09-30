@@ -11,6 +11,7 @@ Mnemosyne is a Hermes Agent memory plugin. It is consumed as a **directory** at
 | `src/mnemosyne/__init__.py` | public provider exports for the Python package |
 | `src/mnemosyne/provider.py` | `MnemosyneMemoryProvider` (Honcho + Hindsight) and registration of the provider selected by policy |
 | `src/mnemosyne/prefetch.py` | parallel prefetch, anchor mtime cache, Honcho profile TTL and explicit invalidation; borrows the provider's executor |
+| `src/mnemosyne/extraction_filter.py` | removes assistant paragraphs that repeat prefetched context before ingestion; leaves user messages to the provider |
 | `src/mnemosyne/tool_schemas.py` | composite tool schemas, default exposure order, dispatch table and tool configuration constants; execution stays in the provider |
 | `src/mnemosyne/recall_processing.py` | recall result formatting, deduplication, forget filtering, conflict labels and output truncation |
 | `src/mnemosyne/commands.py` | `hermes mnemosyne …` subcommands |

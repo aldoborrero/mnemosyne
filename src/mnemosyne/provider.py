@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 from . import config, recall_processing
+from .extraction_filter import strip_prefetched
 from .fact_store import FactStore, today_iso
 from .forget import (
     forget_by_query,
@@ -410,7 +411,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # so Hindsight's extractor can't re-mint paraphrases of facts it
         # just gave us. user_content is left untouched — that's the only
         # actual new information in the turn.
-        cleaned_assistant = self._strip_prefetched(assistant_content)
+        cleaned_assistant = strip_prefetched(assistant_content, self._last_prefetch)
 
         futures = []
         if self._honcho:
@@ -436,70 +437,6 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 f.result(timeout=5)
             except Exception as exc:
                 logger.debug("mnemosyne: sync_turn fan-out failure: %s", exc)
-
-    _SHINGLE_SIZE = 8  # words per shingle
-    _SHINGLE_HIT_RATIO = 0.5  # fraction of a paragraph's shingles that must
-    # be in the prefetch to qualify for stripping
-
-    def _strip_prefetched(self, assistant_content: str) -> str:
-        """Drop paragraphs from `assistant_content` that mostly repeat
-        text we just put into the prompt via prefetch.
-
-        Why: Hindsight.sync_turn LLM-extracts facts from the JSON of the
-        turn. If the assistant cited or paraphrased the prefetched
-        memories, the extractor mints fresh records of them — every
-        session. Recall picks them up next time, and the bank grows
-        without bound (the Barsik loop).
-
-        Approach: word-shingles, paragraph granularity. If a paragraph's
-        shingle hit rate against the prefetch is high, drop it. Conservative
-        thresholds: short paragraphs (<8 words) untouched, partial
-        paraphrases survive."""
-        if not assistant_content or not self._last_prefetch:
-            return assistant_content
-        if not bool(config.get("prefetch", "strip_from_extraction", default=True)):
-            return assistant_content
-
-        prefetch_shingles = self._build_shingles(self._last_prefetch)
-        if not prefetch_shingles:
-            return assistant_content
-
-        kept_paragraphs: List[str] = []
-        for para in assistant_content.split("\n\n"):
-            if not para.strip():
-                kept_paragraphs.append(para)
-                continue
-            para_shingles = self._build_shingles(para)
-            if len(para_shingles) < 2:
-                kept_paragraphs.append(para)
-                continue
-            hits = sum(1 for sh in para_shingles if sh in prefetch_shingles)
-            ratio = hits / len(para_shingles)
-            if ratio >= self._SHINGLE_HIT_RATIO:
-                logger.debug(
-                    "mnemosyne: stripped paraphrased paragraph "
-                    "(%.0f%% shingle overlap with prefetch)",
-                    ratio * 100,
-                )
-                continue
-            kept_paragraphs.append(para)
-        return "\n\n".join(kept_paragraphs)
-
-    @classmethod
-    def _build_shingles(cls, text: str) -> set:
-        if not text:
-            return set()
-        # Lowercase + strip non-word characters; same logic as
-        # fact_store._canonical_key but token-level so word order matters.
-        import re as _re
-
-        words = _re.findall(r"\w+", text.lower(), flags=_re.UNICODE)
-        if len(words) < cls._SHINGLE_SIZE:
-            return set()
-        return {
-            tuple(words[i : i + cls._SHINGLE_SIZE])
-            for i in range(len(words) - cls._SHINGLE_SIZE + 1)
-        }
 
     def on_memory_write(
         self,

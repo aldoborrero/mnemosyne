@@ -168,6 +168,7 @@ src/mnemosyne/
   __init__.py       # public provider exports
   provider.py       # composite provider and registration policy
   prefetch.py       # parallel reads, anchor/profile caches and invalidation
+  extraction_filter.py # prevents reingesting repeated recalled context
   tool_schemas.py   # composite tool definitions and routing metadata
   recall_processing.py # recall formatting, filtering and conflict labels
   commands.py       # hermes mnemosyne subcommands
