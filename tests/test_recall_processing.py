@@ -169,7 +169,7 @@ def test_recall_tool_formats_deduplicates_and_filters(provider):
 
 
 def test_prefetch_formats_filters_and_preserves_sections(provider, monkeypatch):
-    monkeypatch.setattr(provider, "_read_anchor_card", lambda: "- pinned")
+    monkeypatch.setattr(provider._prefetcher, "_read_anchor_card", lambda: "- pinned")
     provider._fact_store.mark_forgotten("tea")
     provider._hindsight._fixed = json.dumps({"result": "1. tea\n2. hiking\n3. hiking"})
     expected = (
@@ -181,7 +181,9 @@ def test_prefetch_formats_filters_and_preserves_sections(provider, monkeypatch):
 
 
 def test_prefetch_preserves_branch_and_total_budgets(provider, settings, monkeypatch):
-    monkeypatch.setattr(provider, "_read_anchor_card", lambda: "abcdefghijk")
+    monkeypatch.setattr(
+        provider._prefetcher, "_read_anchor_card", lambda: "abcdefghijk"
+    )
     provider._honcho = None
     provider._hindsight = None
     settings[("prefetch", "anchor_token_budget")] = 2
@@ -193,5 +195,8 @@ def test_prefetch_preserves_branch_and_total_budgets(provider, settings, monkeyp
 def test_non_json_backend_response_keeps_existing_fallback(provider):
     raw = "1. tea\n2. tea"
     provider._hindsight._fixed = raw
-    assert provider._fetch_hindsight_recall("tea", 100) == raw
+    assert (
+        provider._prefetcher._fetch_hindsight_recall(provider._hindsight, "tea", 100)
+        == raw
+    )
     assert provider.handle_tool_call("memory_recall", {"query": "tea"}) == raw

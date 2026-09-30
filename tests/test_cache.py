@@ -44,7 +44,7 @@ def test_peer_card_invalidated_on_memory_write():
 def test_peer_card_ttl_expires(monkeypatch):
     """Forcing time forward past TTL invalidates the cache entry."""
     p = make_provider(hindsight_text="x")
-    p._peer_cache_ttl_s = 0.05
+    p._prefetcher._peer_cache_ttl_s = 0.05
     p.prefetch("q1")
     assert p._honcho.calls == 1
     time.sleep(0.07)

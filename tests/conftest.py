@@ -6,6 +6,7 @@ import json
 import sys
 import types
 from typing import Any, Dict
+from unittest.mock import patch
 
 
 # 1. Stub agent.memory_provider so `from agent.memory_provider import
@@ -54,12 +55,9 @@ def make_provider(
     """Construct a MnemosyneMemoryProvider with the inner Honcho/Hindsight
     swapped for `_FakeProvider`s with configurable latency. Bypasses the
     real `_load_inner_providers` (which can't run without Hermes installed)."""
-    provider = mnemosyne.MnemosyneMemoryProvider.__new__(
-        mnemosyne.MnemosyneMemoryProvider
-    )
-    # Replicate the bits of __init__ we need.
-    from concurrent.futures import ThreadPoolExecutor
-    import threading as _threading
+    # Exercise real component initialization while avoiding Hermes imports.
+    with patch.object(mnemosyne.MnemosyneMemoryProvider, "_load_inner_providers"):
+        provider = mnemosyne.MnemosyneMemoryProvider()
 
     provider._honcho = _FakeProvider(
         # Real honcho_profile read returns the card as a list under "result".
@@ -72,16 +70,5 @@ def make_provider(
         json.dumps({"result": hindsight_text}),
         sleep_s=hindsight_sleep,
     )
-    provider._executor = ThreadPoolExecutor(
-        max_workers=4, thread_name_prefix="mnemo-test"
-    )
-    provider._fact_store = None
-    provider._init_lock = _threading.Lock()
     provider._initialized = True
-    provider._last_prefetch = ""
-    provider._anchor_cache = None
-    provider._peer_cache = None
-    provider._peer_cache_ttl_s = 60.0
-    provider._cache_lock = _threading.Lock()
-    provider._writes_allowed = True
     return provider

@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +33,7 @@ from .forget import (
     forget_by_query,
     _write_tombstone,
 )
+from .prefetch import Prefetcher
 from .recovery import initialize_cursor_if_missing, replay_missed
 from .tool_schemas import (
     DEFAULT_TOOL_NAMES,
@@ -102,20 +102,6 @@ def _spawn_tombstone_writer(hindsight_provider, texts, when: str) -> None:
 _NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
 
 
-def _truncate_recall_query(query: str) -> str:
-    """Trim query so it never trips Hindsight's 500-token recall limit.
-    Prefers to cut at a word boundary near the end."""
-    if not query:
-        return query
-    if len(query) <= RECALL_QUERY_MAX_CHARS:
-        return query
-    cut = query[:RECALL_QUERY_MAX_CHARS]
-    last_space = cut.rfind(" ")
-    if last_space > RECALL_QUERY_MAX_CHARS * 0.7:
-        cut = cut[:last_space]
-    return cut
-
-
 class MnemosyneMemoryProvider(MemoryProvider):
     """Composite provider — Honcho for user model, Hindsight for facts."""
 
@@ -139,16 +125,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # loop"). Updated atomically; no lock needed for last-write-wins
         # semantics.
         self._last_prefetch: str = ""
-        # Per-turn caches to avoid re-reading anchor_card from disk and
-        # re-fetching the Honcho peer card every prefetch. Anchor is keyed by
-        # file mtime so manual edits are picked up immediately; peer card
-        # uses a short TTL and is invalidated on session-switch / write.
-        self._anchor_cache: Optional[tuple] = None  # (mtime, rendered_text)
-        self._peer_cache: Optional[tuple] = None  # (expires_at_ts, text)
-        self._peer_cache_ttl_s: float = float(
-            config.get("prefetch", "peer_card_ttl_s", default=60.0)
-        )
-        self._cache_lock = threading.Lock()
+        self._prefetcher = Prefetcher(self._executor)
         self._load_inner_providers()
 
     def _inject_hindsight_routing_env(self) -> None:
@@ -395,168 +372,22 @@ class MnemosyneMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        max_total = int(config.get("prefetch", "max_total_tokens", default=4500))
-        anchor_budget = int(config.get("prefetch", "anchor_token_budget", default=200))
-        peer_card_budget = int(
-            config.get("prefetch", "honcho_card_token_budget", default=200)
-        )
-        hindsight_budget = int(
-            config.get("prefetch", "hindsight_token_budget", default=4096)
-        )
-        per_branch_timeout = float(
-            config.get("prefetch", "parallel_timeout_s", default=12.0)
-        )
-
-        # Fan out the three independent fetches in parallel via the existing
-        # executor. They are independent reads (anchor=disk, peer=Honcho,
-        # hindsight=HTTP) — the prior serial layout was dominated by
-        # _fetch_hindsight_recall (~6-8s). Concurrent execution caps total
-        # time at the slowest branch plus a few ms of overhead.
-        anchor_fut = self._executor.submit(self._read_anchor_card)
-        peer_fut = self._executor.submit(self._fetch_honcho_peer_card)
-        hindsight_fut = self._executor.submit(
-            self._fetch_hindsight_recall,
+        result = self._prefetcher.prefetch(
             query,
-            hindsight_budget,
+            honcho=self._honcho,
+            hindsight=self._hindsight,
+            fact_store=self._fact_store,
         )
-
-        def _wait(fut, default=""):
-            try:
-                return fut.result(timeout=per_branch_timeout) or default
-            except Exception as exc:
-                logger.debug("mnemosyne: prefetch branch failed/timeout: %s", exc)
-                return default
-
-        anchor_text = _wait(anchor_fut)
-        peer_card_text = _wait(peer_fut)
-        hindsight_text = _wait(hindsight_fut)
-
-        sections: List[str] = []
-
-        if anchor_text:
-            sections.append(
-                "# Pinned (anchor card)\n"
-                + recall_processing.truncate_to_chars(anchor_text, anchor_budget * 4)
-            )
-
-        if peer_card_text:
-            sections.append(
-                "# User profile\n"
-                + recall_processing.truncate_to_chars(
-                    peer_card_text, peer_card_budget * 4
-                )
-            )
-
-        if hindsight_text:
-            hindsight_text = recall_processing.filter_forgotten(
-                hindsight_text, fact_store=self._fact_store
-            )
-            if hindsight_text:
-                sections.append(
-                    "# Facts (relevant)\n"
-                    + recall_processing.truncate_to_chars(
-                        hindsight_text, hindsight_budget * 4
-                    )
-                )
-
-        if len(sections) >= 3:
-            sections = recall_processing.apply_conflict_resolver(sections)
-
-        result = "\n\n".join(sections)
-        capped = recall_processing.truncate_to_chars(result, max_total * 4)
-        self._last_prefetch = capped
-        return capped
+        self._last_prefetch = result
+        return result
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if self._honcho:
-            try:
-                self._honcho.queue_prefetch(query, session_id=session_id)
-            except Exception:
-                pass
-        if self._hindsight:
-            try:
-                self._hindsight.queue_prefetch(query, session_id=session_id)
-            except Exception:
-                pass
-
-    def _read_anchor_card(self) -> str:
-        fn = config.get("anchor_card", "filename", default="anchor_card.md")
-        path = config.plugin_dir() / fn
-        if not path.exists():
-            return ""
-        try:
-            mtime = path.stat().st_mtime
-        except Exception:
-            mtime = None
-        with self._cache_lock:
-            cache = self._anchor_cache
-        if cache is not None and mtime is not None and cache[0] == mtime:
-            return cache[1]
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            return ""
-        keep = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            keep.append(stripped)
-        rendered = "\n".join(f"- {line}" for line in keep)
-        if mtime is not None:
-            with self._cache_lock:
-                self._anchor_cache = (mtime, rendered)
-        return rendered
-
-    def _fetch_honcho_peer_card(self) -> str:
-        """Static peer card via Honcho — no LLM, no representation summary.
-        Short-TTL cached because the card rarely changes between turns."""
-        if self._honcho is None:
-            return ""
-        now = time.monotonic()
-        with self._cache_lock:
-            cache = self._peer_cache
-        if cache is not None and cache[0] > now:
-            return cache[1]
-        text = ""
-        try:
-            raw = self._honcho.handle_tool_call("honcho_profile", {})
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            # A honcho_profile read returns the card as a list under "result";
-            # "card" only appears on a write, so reading it dropped every profile.
-            result = data.get("result") if isinstance(data, dict) else None
-            if isinstance(result, list) and result:
-                text = "\n".join(f"- {item}" for item in result)
-            elif isinstance(data, dict) and data.get("hint"):
-                text = f"_{data['hint']}_"
-        except Exception as exc:
-            logger.debug("mnemosyne: honcho profile fetch failed: %s", exc)
-        with self._cache_lock:
-            self._peer_cache = (now + self._peer_cache_ttl_s, text)
-        return text
-
-    def _fetch_hindsight_recall(self, query: str, max_tokens: int) -> str:
-        if self._hindsight is None or not query:
-            return ""
-        try:
-            raw = self._hindsight.handle_tool_call(
-                "hindsight_recall",
-                {
-                    "query": _truncate_recall_query(query),
-                    "max_tokens": min(max_tokens, 4096),
-                },
-            )
-            if isinstance(raw, str):
-                # Try JSON, fall back to plain text
-                try:
-                    data = json.loads(raw)
-                    return recall_processing.format_hindsight_results(data)
-                except Exception:
-                    return raw
-            return recall_processing.format_hindsight_results(raw)
-        except Exception as exc:
-            logger.debug("mnemosyne: hindsight recall failed: %s", exc)
-            return ""
+        self._prefetcher.queue_prefetch(
+            query,
+            session_id=session_id,
+            honcho=self._honcho,
+            hindsight=self._hindsight,
+        )
 
     # ------------------------------------------------------------------
     # Write path (plan items 1, 2, 3, 10)
@@ -684,8 +515,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if not self._writes_allowed:
             return
         # A write may invalidate the cached peer card (e.g. profile update).
-        with self._cache_lock:
-            self._peer_cache = None
+        self._prefetcher.invalidate_peer_card()
         # Pass-through to inner providers so they can do their own bookkeeping.
         if self._honcho:
             try:
@@ -810,7 +640,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             q = args.get("query")
             if isinstance(q, str) and len(q) > RECALL_QUERY_MAX_CHARS:
                 args = dict(args)
-                args["query"] = _truncate_recall_query(q)
+                args["query"] = recall_processing.truncate_recall_query(q)
                 logger.debug(
                     "mnemosyne: truncated %s query from %d to %d chars",
                     tool_name,
@@ -938,9 +768,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
     ) -> None:
         # New session — drop both per-turn caches so peer card and anchor
         # are re-evaluated for the new context.
-        with self._cache_lock:
-            self._peer_cache = None
-            self._anchor_cache = None
+        self._prefetcher.invalidate_all()
         if self._honcho:
             try:
                 self._honcho.on_session_switch(

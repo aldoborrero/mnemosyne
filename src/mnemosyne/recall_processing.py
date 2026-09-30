@@ -1,7 +1,7 @@
 """Format and filter recalled memories before exposing them to Hermes.
 
-The provider owns backend calls, prefetch orchestration and caches. This module
-processes their results, using an explicit fact store for forget filtering.
+The provider and prefetcher own backend calls and caches. This module processes
+their results and bounds recall queries, using an explicit store for forget filtering.
 """
 
 from __future__ import annotations
@@ -12,12 +12,14 @@ from . import config
 from .conflict import is_contradiction, label_pair
 from .fact_store import FactStore, today_iso
 from .forget import is_forgotten as _is_forgotten
+from .tool_schemas import RECALL_QUERY_MAX_CHARS
 
 __all__ = [
     "apply_conflict_resolver",
     "filter_forgotten",
     "format_hindsight_results",
     "truncate_to_chars",
+    "truncate_recall_query",
 ]
 
 
@@ -214,3 +216,17 @@ def apply_conflict_resolver(sections: List[str]) -> List[str]:
         if not conflict:
             annotated_facts.append(fact_line)
     return [anchor, profile, "\n".join(annotated_facts)]
+
+
+def truncate_recall_query(query: str) -> str:
+    """Trim query so it never trips Hindsight's 500-token recall limit.
+    Prefers to cut at a word boundary near the end."""
+    if not query:
+        return query
+    if len(query) <= RECALL_QUERY_MAX_CHARS:
+        return query
+    cut = query[:RECALL_QUERY_MAX_CHARS]
+    last_space = cut.rfind(" ")
+    if last_space > RECALL_QUERY_MAX_CHARS * 0.7:
+        cut = cut[:last_space]
+    return cut
