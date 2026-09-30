@@ -23,8 +23,8 @@ sys.modules.setdefault("agent", _agent_pkg)
 sys.modules.setdefault("agent.memory_provider", _mp_module)
 
 
-# 2. Import normally; pytest adds src/ to the import path.
-from mnemosyne import provider as mnemosyne
+# 2. Import after installing the Hermes stub; pytest adds src/ to the import path.
+from mnemosyne import provider as mnemosyne  # noqa: E402
 
 
 # 3. Fake inner providers — they record calls, sleep to emulate the real

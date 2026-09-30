@@ -27,12 +27,12 @@ Jaccard-only, then to no-op (return original list).
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import math
 import os
 import urllib.error
 import urllib.request
-import json as _json
 from typing import Iterable, List, Optional, Sequence
 
 from . import config

@@ -9,7 +9,8 @@ from unittest.mock import Mock
 import pytest
 from conftest import make_provider
 
-from mnemosyne import config, prefetch as cache_module
+from mnemosyne import config
+from mnemosyne import prefetch as cache_module
 
 
 @pytest.fixture

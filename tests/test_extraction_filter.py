@@ -9,7 +9,6 @@ from conftest import make_provider
 from mnemosyne import config
 from mnemosyne.extraction_filter import strip_prefetched
 
-
 MEMORY = "one two three four five six seven eight nine"
 NEW_INFORMATION = "A completely new fact about tomorrow."
 

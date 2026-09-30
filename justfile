@@ -7,15 +7,15 @@ default:
 test *args:
     pytest tests {{ args }}
 
-# Lint — advisory, not a CI gate (see the ruff note in nix/formatter.nix)
+# Check Python lint without applying fixes (also enforced by the CI gate)
 lint:
     ruff check .
 
-# Format everything (nix, python, yaml, toml, markdown, shell)
+# Apply safe Python lint fixes and format everything
 fmt:
     nix fmt
 
-# Every check CI runs — builds the plugin, runs the tests, checks formatting
+# Every check CI runs — builds the plugin, runs tests, checks lint and formatting
 check:
     nix flake check --log-format bar-with-logs
 

@@ -15,7 +15,8 @@ import pytest
 from conftest import mnemosyne
 
 from mnemosyne import approved as approved_mod
-from mnemosyne import commands as cli, memory_files, policy
+from mnemosyne import commands as cli
+from mnemosyne import memory_files, policy
 from mnemosyne.approved import ApprovedMemoryProvider
 from mnemosyne.hindsight_store import HindsightStore
 from mnemosyne.openviking_store import OpenVikingStore

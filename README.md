@@ -199,7 +199,7 @@ Contributions and bug reports are very welcome. Standard GitHub flow:
 Before submitting a PR:
 
 - Verify your change works on both **macOS** and **Linux** if it touches `install.sh` or filesystem paths.
-- Run `ruff check` to catch obvious style issues.
+- Run `just fmt` to apply safe Ruff lint fixes and format the code. `just lint` checks Python without changing files; `just check` runs the CI gate (build, tests, lint, and formatting).
 - Keep commits focused — one concern per commit.
 
 ## License

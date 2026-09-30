@@ -36,9 +36,9 @@ which blueprint discovers by path.
 | Command | What it does |
 | --- | --- |
 | `just test` | `pytest tests` |
-| `just lint` | `ruff check .` — advisory, not part of `nix flake check` |
-| `just fmt` | `nix fmt` — nix, python, yaml, toml, markdown, shell |
-| `just check` | `nix flake check` — build + tests + formatting, the single CI gate |
+| `just lint` | `ruff check .` — Python lint without fixes, also enforced by `nix flake check` |
+| `just fmt` | `nix fmt` — safe Python lint fixes + formatting (nix, python, yaml, toml, markdown, shell) |
+| `just check` | `nix flake check` — build + tests + lint + formatting, the single CI gate |
 | `just build` | `nix build .#mnemosyne` |
 
 `direnv allow` (or `nix develop`) puts all of the above on `PATH`.
@@ -70,10 +70,11 @@ nix eval .#checks.x86_64-linux --apply builtins.attrNames   # must list pkgs-for
 CI pins nixpkgs to `flake.lock`'s revision rather than a channel, so a local
 `nix flake check` and the CI one evaluate the same nixpkgs.
 
-`nix fmt` formats Python with `ruff format` only. `ruff check --fix` is
-deliberately not part of the formatter: under ruff 0.16's default rule set this
-tree has 288 findings, 174 of which `--fix` would rewrite as a side effect of
-formatting, and 114 of which have no fix at all — so wiring it in would make
-`nix flake check` permanently red. Linting stays advisory (`just lint`); if the
-project wants it enforced, add a `[tool.ruff]` section to `pyproject.toml`
-selecting the rules it actually intends, then enable `programs.ruff-check`.
+`nix fmt` runs `ruff check --fix` (safe fixes, priority 1) before `ruff format`
+(priority 2). `pyproject.toml` explicitly selects `E4`, `E7`, `E9`, `F`, and `I`
+for basic correctness and import ordering, targeting Python 3.11. The formatter
+check enforces both lint and formatting through `nix flake check`.
+
+The Hermes entry adapters and `tests/conftest.py` have local `E402` exceptions:
+their delayed imports require package initialization or runtime stubs first.
+Keep these imports after the setup they depend on.

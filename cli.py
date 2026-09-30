@@ -27,6 +27,7 @@ if _package is None or not hasattr(_package, "register"):
             sys.modules[__package__] = _package
         raise
 
-from .commands import mnemosyne_command, register_cli
+# The command import requires the initialized plugin package above.
+from .commands import mnemosyne_command, register_cli  # noqa: E402
 
 __all__ = ["mnemosyne_command", "register_cli"]

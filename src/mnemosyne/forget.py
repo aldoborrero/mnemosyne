@@ -32,8 +32,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import config
-from .text_utils import SPEAKER_STOP, containment, content_tokens
 from .fact_store import FactStore, _canonical_key, today_iso
+from .text_utils import SPEAKER_STOP, containment, content_tokens
 
 logger = logging.getLogger(__name__)
 

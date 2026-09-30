@@ -16,12 +16,11 @@ let
       nixfmt.enable = true;
       nixfmt.priority = 2;
 
-      # python — formatter only. `ruff check --fix` is deliberately NOT wired in
-      # here: ruff 0.16's default rule set flags 288 issues in this tree, 174 of
-      # which it would silently rewrite as a side effect of `nix fmt`, and the
-      # remaining 114 have no fix — so `nix flake check` could never go green.
-      # Linting stays a separate, advisory step (`just lint`), as README says.
+      # python — safe lint fixes first, then formatting; rules in pyproject.toml
+      ruff-check.enable = true;
+      ruff-check.priority = 1;
       ruff-format.enable = true;
+      ruff-format.priority = 2;
 
       # shell — install.sh and .envrc are not *.sh, so they need `includes`
       shellcheck = {

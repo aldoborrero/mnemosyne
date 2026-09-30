@@ -24,6 +24,13 @@ Repository = "https://github.com/johnnykor82/mnemosyne"
 where = ["src"]
 include = ["mnemosyne*"]
 
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Basic correctness and import ordering; keep broader style changes separate.
+select = ["E4", "E7", "E9", "F", "I"]
+
 # Note: pytest config lives in tests/pytest.ini (not here). Putting it there
 # pins pytest's rootdir to tests/, preventing it from walking up to the plugin
 # root and importing the Hermes directory adapter as the source package.

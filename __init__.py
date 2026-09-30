@@ -17,6 +17,7 @@ if _parent_name and _parent_name not in sys.modules:
 
 __path__.insert(0, str(Path(__file__).resolve().parent / "src" / "mnemosyne"))
 
-from .provider import MnemosyneMemoryProvider, register
+# The provider import requires the package path and synthetic parent above.
+from .provider import MnemosyneMemoryProvider, register  # noqa: E402
 
 __all__ = ["MnemosyneMemoryProvider", "register"]

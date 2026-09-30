@@ -22,7 +22,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -31,8 +32,8 @@ from . import config, recall_processing
 from .extraction_filter import strip_prefetched
 from .fact_store import FactStore, today_iso
 from .forget import (
-    forget_by_query,
     _write_tombstone,
+    forget_by_query,
 )
 from .prefetch import Prefetcher
 from .recovery import initialize_cursor_if_missing, replay_missed
