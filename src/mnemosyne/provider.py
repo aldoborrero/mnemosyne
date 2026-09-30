@@ -28,12 +28,10 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from . import config
-from .conflict import is_contradiction, label_pair
+from . import config, recall_processing
 from .fact_store import FactStore, today_iso
 from .forget import (
     forget_by_query,
-    is_forgotten as _is_forgotten,
     _write_tombstone,
 )
 from .recovery import initialize_cursor_if_missing, replay_missed
@@ -102,16 +100,6 @@ def _spawn_tombstone_writer(hindsight_provider, texts, when: str) -> None:
 # "cron" for scheduled jobs and "subagent" for delegate_task children, and
 # documents that providers skip writes for them; Honcho also skips "flush".
 _NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
-
-
-def _truncate_to_chars(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    cut = text[:max_chars]
-    last_nl = cut.rfind("\n")
-    if last_nl > max_chars * 0.5:
-        cut = cut[:last_nl]
-    return cut + "\n…[truncated]"
 
 
 def _truncate_recall_query(query: str) -> str:
@@ -448,28 +436,34 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if anchor_text:
             sections.append(
                 "# Pinned (anchor card)\n"
-                + _truncate_to_chars(anchor_text, anchor_budget * 4)
+                + recall_processing.truncate_to_chars(anchor_text, anchor_budget * 4)
             )
 
         if peer_card_text:
             sections.append(
                 "# User profile\n"
-                + _truncate_to_chars(peer_card_text, peer_card_budget * 4)
+                + recall_processing.truncate_to_chars(
+                    peer_card_text, peer_card_budget * 4
+                )
             )
 
         if hindsight_text:
-            hindsight_text = self._filter_forgotten(hindsight_text)
+            hindsight_text = recall_processing.filter_forgotten(
+                hindsight_text, fact_store=self._fact_store
+            )
             if hindsight_text:
                 sections.append(
                     "# Facts (relevant)\n"
-                    + _truncate_to_chars(hindsight_text, hindsight_budget * 4)
+                    + recall_processing.truncate_to_chars(
+                        hindsight_text, hindsight_budget * 4
+                    )
                 )
 
         if len(sections) >= 3:
-            sections = self._apply_conflict_resolver(sections)
+            sections = recall_processing.apply_conflict_resolver(sections)
 
         result = "\n\n".join(sections)
-        capped = _truncate_to_chars(result, max_total * 4)
+        capped = recall_processing.truncate_to_chars(result, max_total * 4)
         self._last_prefetch = capped
         return capped
 
@@ -556,197 +550,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 # Try JSON, fall back to plain text
                 try:
                     data = json.loads(raw)
-                    return self._format_hindsight_results(data)
+                    return recall_processing.format_hindsight_results(data)
                 except Exception:
                     return raw
-            return self._format_hindsight_results(raw)
+            return recall_processing.format_hindsight_results(raw)
         except Exception as exc:
             logger.debug("mnemosyne: hindsight recall failed: %s", exc)
             return ""
-
-    def _format_hindsight_results(self, data: Any) -> str:
-        if isinstance(data, str):
-            return self._dedupe_recall_text(data)
-        if isinstance(data, list):
-            joined = "\n".join(
-                self._extract_text(item) for item in data if self._extract_text(item)
-            )
-            return self._dedupe_recall_text(joined)
-        if isinstance(data, dict):
-            # 'result' is the key the hermes hindsight plugin uses for
-            # numbered-list recall output. Check it first.
-            for key in (
-                "result",
-                "memories",
-                "results",
-                "items",
-                "matches",
-                "data",
-                "text",
-            ):
-                v = data.get(key)
-                if v:
-                    return self._format_hindsight_results(v)
-        return str(data)
-
-    @staticmethod
-    def _dedupe_recall_text(text: str) -> str:
-        """Hindsight returns top-N candidates ranked by similarity to the
-        QUERY, not pairwise-distinct. With 40+ paraphrases of one event in
-        the bank, all of them survive the existing exact-canonical-key
-        filter and bloat context.
-
-        Hybrid clustering (see ``dedup.cluster_lines``):
-          - Jaccard token overlap groups paraphrases.
-          - Embedding cosine confirms the merge — pairs that pass
-            Jaccard but fail cosine are kept apart, protecting against
-            "Barsik got sick" vs "Barsik died" type collapses.
-        Configurable via ``prefetch.dedup_*`` keys."""
-        if not text:
-            return text
-        from .dedup import cluster_lines
-
-        cleaned: List[str] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            content = stripped
-            for prefix in range(1, 100):
-                pfx = f"{prefix}. "
-                if content.startswith(pfx):
-                    content = content[len(pfx) :]
-                    break
-            head, sep, _ = content.partition(" | Involving:")
-            content = head if sep else content
-            if content:
-                cleaned.append(content)
-
-        kept = cluster_lines(cleaned)
-        return "\n".join(f"- {item}" for item in kept)
-
-    @staticmethod
-    def _extract_text(item: Any) -> str:
-        if isinstance(item, str):
-            return item
-        if isinstance(item, dict):
-            return item.get("text") or item.get("content") or item.get("body") or ""
-        return ""
-
-    def _filter_forgotten(self, text: str) -> str:
-        """Drop lines whose canonical key was point-forgotten OR whose
-        token set hits any stored semantic forget signature.
-
-        Matching uses **candidate-containment**: ``|cand ∩ sig| / |cand|``.
-        Asks "is most of this candidate's vocabulary covered by the
-        forget signature?" — the right question for asymmetric sizes (a
-        signature accumulates many tokens across an op; a candidate is
-        one line). Symmetric Jaccard fails here: a 6-token candidate vs
-        an 11-token signature with 4 shared words scores 0.31 — below
-        any safe threshold — even though every content word in the
-        candidate IS in the signature. Containment scores 0.66 and
-        catches the paraphrase as intended.
-        """
-        if not self._fact_store:
-            return text
-
-        # Refresh the in-memory signature cache on demand. The table is
-        # tiny (designed to stay <1k rows), so we just re-read it on
-        # each filter pass for correctness; cost is microseconds.
-        try:
-            sigs = self._fact_store.list_signatures()
-        except Exception:
-            sigs = []
-        try:
-            cont_min = float(config.get("forget", "signature_jaccard_min", default=0.5))
-        except Exception:
-            cont_min = 0.5
-
-        # Pre-compute signature token sets once per call.
-        sig_tokens: List[tuple] = []
-        for sig in sigs:
-            tokens = set(sig.get("tokens") or [])
-            if tokens:
-                sig_tokens.append((sig.get("id"), tokens))
-
-        # Same tokenizer the signature was built with in forget.py —
-        # dedup's stoplist differs, which would score containment
-        # across two different vocabularies.
-        from .forget import _content_tokens
-
-        kept: List[str] = []
-        sig_hits: set = set()
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                kept.append(line)
-                continue
-            # Already-tombstoned lines from Hindsight
-            if "[FORGOTTEN" in line:
-                continue
-            # Exact-key forget marks
-            if _is_forgotten(self._fact_store, line):
-                continue
-            # Semantic signature filter (candidate-containment)
-            if sig_tokens:
-                content = stripped
-                # strip "1. " number prefix and trailing "| Involving:"
-                head, sep, _ = content.partition(" | Involving:")
-                content = head if sep else content
-                line_tokens = _content_tokens(content)
-                if line_tokens:
-                    matched = False
-                    for sid, tokens in sig_tokens:
-                        inter = line_tokens & tokens
-                        cont = len(inter) / len(line_tokens)
-                        if cont >= cont_min:
-                            matched = True
-                            if sid:
-                                sig_hits.add(sid)
-                            break
-                    if matched:
-                        continue
-            kept.append(line)
-
-        # Bump last_match_ts on signatures that did real work — keeps
-        # vacuum from dropping useful sigs.
-        for sid in sig_hits:
-            try:
-                self._fact_store.touch_signature(int(sid))
-            except Exception:
-                pass
-
-        return "\n".join(kept)
-
-    def _apply_conflict_resolver(self, sections: List[str]) -> List[str]:
-        """If we detect a contradiction between the user profile and a fact,
-        annotate both inline. Best-effort; rule-based detector."""
-        if len(sections) < 3:
-            return sections
-        anchor, profile, facts = sections[0], sections[1], sections[2]
-        profile_lines = [ln for ln in profile.splitlines() if ln.startswith("- ")]
-        annotated_facts: List[str] = []
-        today = today_iso()
-        for fact_line in facts.splitlines():
-            if not fact_line.strip() or fact_line.startswith("#"):
-                annotated_facts.append(fact_line)
-                continue
-            conflict = False
-            for profile_line in profile_lines:
-                if is_contradiction(fact_line, profile_line):
-                    a, b = label_pair(
-                        fact_line,
-                        {"label": "Hindsight", "when": today},
-                        profile_line,
-                        {"label": "Honcho profile"},
-                    )
-                    annotated_facts.append(a)
-                    annotated_facts.append(b)
-                    conflict = True
-                    break
-            if not conflict:
-                annotated_facts.append(fact_line)
-        return [anchor, profile, "\n".join(annotated_facts)]
 
     # ------------------------------------------------------------------
     # Write path (plan items 1, 2, 3, 10)
@@ -1044,10 +854,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Post-process recall: dedup duplicate surface forms and drop forgotten lines.
         if tool_name == "memory_recall":
             try:
-                cleaned = self._format_hindsight_results(
+                cleaned = recall_processing.format_hindsight_results(
                     json.loads(raw) if isinstance(raw, str) else raw
                 )
-                cleaned = self._filter_forgotten(cleaned)
+                cleaned = recall_processing.filter_forgotten(
+                    cleaned, fact_store=self._fact_store
+                )
                 if cleaned.strip():
                     return json.dumps({"result": cleaned}, ensure_ascii=False)
                 return json.dumps(

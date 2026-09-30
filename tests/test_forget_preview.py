@@ -166,11 +166,17 @@ def test_confirm_registers_a_semantic_signature(store):
 
 
 def test_signature_tokens_match_the_read_side_filter_tokenizer(store):
-    """The signature is built and matched with the same tokenizer, so the
-    containment filter never scores across two vocabularies."""
-    import mnemosyne as pkg
-    import inspect
+    """A confirmed forget also hides paraphrases in later recall results."""
+    from mnemosyne.recall_processing import filter_forgotten
 
-    src = inspect.getsource(pkg.MnemosyneMemoryProvider._filter_forgotten)
-    assert "from .forget import _content_tokens" in src
-    assert "from .dedup import _content_tokens" not in src
+    p = _DriftingProvider(["Barsik the cat died in 2019"])
+    preview = _preview(store, p)
+    forget_mod.forget_by_query(
+        store, p, "barsik", confirmed=True, preview_token=preview["preview_token"]
+    )
+    paraphrase = "- The user said the cat Barsik died in 2019"
+    assert not store.is_forgotten(paraphrase)
+    assert filter_forgotten(paraphrase + "\n- Enjoys hiking", fact_store=store) == (
+        "- Enjoys hiking"
+    )
+    assert store.list_signatures()[0]["last_match_ts"]

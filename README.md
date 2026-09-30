@@ -168,6 +168,7 @@ src/mnemosyne/
   __init__.py       # public provider exports
   provider.py       # composite provider and registration policy
   tool_schemas.py   # composite tool definitions and routing metadata
+  recall_processing.py # recall formatting, filtering and conflict labels
   commands.py       # hermes mnemosyne subcommands
   approved.py       # approved-writes provider
   ...               # configuration, stores and memory helpers
