@@ -37,7 +37,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     install -d "$out/share/hermes/plugins/mnemosyne"
-    cp -r -- __init__.py cli.py src plugin.yaml install.sh README.md README.ru.md LICENSE \
+    cp -r -- __init__.py cli.py src docs plugin.yaml install.sh README.md AGENTS.md LICENSE \
       "$out/share/hermes/plugins/mnemosyne/"
     runHook postInstall
   '';

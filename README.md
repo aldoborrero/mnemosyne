@@ -1,223 +1,223 @@
-# Mnemosyne — Long-Term Memory Plugin for Hermes Agent
+![Mnemosyne — memory for Hermes. An amber M connected to a constellation of memories.](docs/assets/mnemosyne.svg)
 
-> 🇷🇺 Читать на русском: [README.ru.md](README.ru.md)
+# Mnemosyne
 
-**Mnemosyne** (Μνημοσύνη — the Greek Titaness of memory, mother of the nine Muses) is a composite long-term memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It combines two existing memory providers — **[Honcho](https://github.com/plastic-labs/honcho)** (user model: style, preferences, conversational personality) and **[Hindsight](https://hindsight.app)** (fact store: entity graph, multi-strategy semantic recall) — behind a single `MemoryProvider` interface, and adds date tagging, repetition counting, conflict detection, crash recovery, and explicit forgetting on top.
+Long-term memory for [Hermes Agent](https://github.com/NousResearch/hermes-agent). Combine a user model and factual recall in one provider, or mirror only the memory entries approved through Hermes.
 
-Pairs naturally with its mythological daughter [Hermes-Mneme](https://github.com/johnnykor82/hermes-mneme) — a separate plugin that handles *short-term, in-session* context engineering.
+[Get started](#get-started) · [Configuration](#configuration) · [Approved writes](docs/approved-writes.md) · [Development](#development) · [Apache-2.0](LICENSE)
 
-## Why a composite memory provider
+## Choose your memory mode
 
-Hermes Agent permits only one external memory provider at a time. That's a problem, because the two best providers in the ecosystem are complementary, not interchangeable:
+| | Conversation memory (`turns`, default) | Approved memory (`approved_writes`) |
+| --- | --- | --- |
+| Source | Conversation turns and explicit memory writes | Hermes' `MEMORY.md` and `USER.md` files |
+| Backends | Honcho for the user model; Hindsight for facts | OpenViking (default), Hindsight, or both |
+| Writes | Delegates conversation ingestion to the inner providers | Reconciles backend entries with the memory files |
+| Recall | Profile, factual search, reflection, and prefetched context | Search approved entries; optional prefetch and reflection |
+| Removal | Preview and confirm a soft-delete through Mnemosyne | Remove entries through Hermes' approved `memory` tool |
 
-- **Honcho** is excellent at modelling *who the user is* — dialectic reasoning, peer cards, communication style, stable preferences. It's weaker at precise factual recall: no decay, no deduplication, LLM-generated representations.
-- **Hindsight** is the inverse — strong factual store, entity graph, hybrid semantic + keyword recall, but no model of the user as a person.
+The conversation provider adds date and repetition metadata, an anchor card for pinned facts, recall deduplication, conflict annotations, crash recovery, and session imports. Prefetch combines the anchor card, Honcho profile, and Hindsight results; repeated prefetched text is filtered out of assistant content before ingestion.
 
-Mnemosyne wraps both behind a single `MemoryProvider` and routes every call to whichever inner provider is right for the job:
+Approved memory runs a separate provider. It does not ingest conversation turns. Enable Hermes' write approval alongside this mode and configure the desired backend before activation. See the [approved-writes guide](docs/approved-writes.md) for reconciliation, profile isolation, and backend requirements.
 
-- **Writes** → both providers (Honcho keeps its user-model fed; Hindsight builds the fact graph).
-- **Auto-inject (prefetch)** → Hindsight facts + Honcho peer card; Honcho's noisy session summary / user representation is suppressed (we recommend configuring Honcho to `recallMode: tools`).
-- **Tools** → six curated `memory_*` tools with tight role-based descriptions that route to the right inner provider under the hood.
+## Get started
 
-The composite layer also adds:
+### Requirements
 
-1. **Date tags** on every retained fact (`fact_store.db`) — so "what did we discuss last week?" actually works.
-1. **Repetition counter** tracking how often a fact comes up — important facts surface higher in recall.
-1. **Explicit forgetting** — `memory_forget` tool + CLI, soft-delete via signature with semantic deduplication so the same fact doesn't sneak back in.
+- Python **3.11+**, on Linux or macOS.
+- A working Hermes Agent installation and its Python virtual environment.
+- Configured memory backends for your chosen mode. Conversation mode uses Hermes' Honcho and Hindsight providers; approved mode needs Hermes' OpenViking client and connection settings, or a Hindsight API endpoint.
 
-## Status
+The plugin is loaded as a **directory**, including its root adapters and `src/` package. Keep the full checkout together.
 
-**Scaffold (Stage A).** Currently pure fan-out delegation to the two inner providers. The composite layer (date tags, repetition counter, conflict resolver, forgetting, anchor card, prefetch fusion) is on the roadmap below.
-
-## Requirements
-
-- **Python 3.11+**
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** installed and working (the plugin assumes a Hermes venv at `~/.hermes/hermes-agent/venv`, configurable via `HERMES_VENV`).
-- **[Honcho](https://honcho.dev)** — Python client (`honcho-ai`). Already in place if you've been using Honcho as your memory provider.
-- **[Hindsight](https://hindsight.app)** — install via `hermes memory setup` and pick `hindsight`.
-- **macOS or Linux.** The plugin is platform-agnostic Python; the installer covers both.
-
-## Installation
+### Install
 
 ```bash
-git clone https://github.com/johnnykor82/mnemosyne.git \
-  ~/.hermes/plugins/mnemosyne
-cd ~/.hermes/plugins/mnemosyne
+git clone https://github.com/aldoborrero/mnemosyne.git \
+  "${HERMES_HOME:-$HOME/.hermes}/plugins/mnemosyne"
+cd "${HERMES_HOME:-$HOME/.hermes}/plugins/mnemosyne"
 ./install.sh
 ```
 
-The installer detects your Hermes venv (default `~/.hermes/hermes-agent/venv`, override with `HERMES_VENV=...`), installs the two Python dependencies (`honcho-ai`, `hindsight-client>=0.4.22`), and verifies they import cleanly.
+`install.sh` installs `honcho-ai` and `hindsight-client>=0.4.22` into Hermes' virtual environment. It does not provision backend servers. The default environment is `~/.hermes/hermes-agent/venv`; override it when needed:
 
-The plugin lives in `$HERMES_HOME/plugins/mnemosyne/` (default `~/.hermes/plugins/mnemosyne/`) and survives `git pull` of `hermes-agent` itself — it's a user-installed addon, not a core component.
+```bash
+HERMES_VENV=/path/to/hermes/venv ./install.sh
+```
 
-## Activation
+### Configure and activate
+
+Choose your mode in [configuration](#configuration) first. For conversation mode, check the [embedding and reranker defaults](#conversation-backend-routing): they expect local services that the installer does not start.
 
 ```bash
 hermes config set memory.provider mnemosyne
 hermes gateway restart
 ```
 
-Verify it loaded:
+Inspect the local setup and gateway logs:
 
 ```bash
-tail -f ~/.hermes/logs/agent.log | grep -i mnemosyne
+hermes mnemosyne status
+tail -n 100 "${HERMES_HOME:-$HOME/.hermes}/logs/agent.log"
 ```
 
-To roll back to a previous provider:
+`status` reports local files and the availability of the Honcho/Hindsight providers. In approved mode, use the gateway logs to verify the selected backend initialized. Then try a memory query in Hermes, such as “What do you remember about my current project?”
+
+## Usage
+
+### Conversation tools
+
+Hermes exposes these tools to the agent in conversation mode:
+
+| Tool | Purpose |
+| --- | --- |
+| `memory_profile` | Read or update the Honcho profile card |
+| `memory_reasoning` | Ask Honcho about preferences, habits, or communication style |
+| `memory_conclude` | Record a stable user-related conclusion in Honcho |
+| `memory_recall` | Search Hindsight for remembered facts |
+| `memory_reflect` | Ask Hindsight to synthesize an answer from memories |
+| `memory_forget` | Preview matching memories, then confirm forgetting |
+
+Forgetting uses local signatures to filter future recall, with optional Hindsight tombstones. It is a soft-delete mechanism, not guaranteed erasure from every backend.
+
+### CLI
 
 ```bash
-hermes config set memory.provider honcho   # or whatever you were using
-hermes gateway restart
+# Inspect the plugin and pinned context.
+hermes mnemosyne status
+hermes mnemosyne anchor list
+
+# Pin a short fact for conversation-mode prefetch.
+hermes mnemosyne anchor add --text "The current project is Mnemosyne."
+
+# Import past sessions into Hindsight (conversation mode).
+hermes mnemosyne import --days 90 --min-turns 5
+
+# Interactively select and confirm memories to forget (conversation mode).
+hermes mnemosyne forget "an outdated project"
 ```
+
+In approved mode, `hermes mnemosyne reconcile` synchronizes the backends with the current memory files. `import` and `forget` refuse to run in that mode; use Hermes' approved memory workflow instead. Backend cleanup commands are described in the [guide](docs/approved-writes.md).
 
 ## Configuration
 
-Mnemosyne reads its configuration from `mnemosyne/config.json` (created at plugin directory on first run). Most defaults work out of the box — the plugin is designed so that a fresh install "Just Works" against a local LiteLLM proxy at `http://localhost:8000`.
+Create `config.json` under the profile's `$HERMES_HOME/plugins/mnemosyne/` directory when you need overrides. If the file is absent, built-in defaults apply; the loader does not create it.
 
-Key things you can override (via `config.json` `hindsight_env` block, or via shell env vars — shell wins over config):
+**Precedence:** mapped environment variables → `config.json` → built-in defaults. The full settings and environment mapping live in [config.py](src/mnemosyne/config.py).
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `HINDSIGHT_API_EMBEDDINGS_PROVIDER` | `openai` | Embedding provider name passed to Hindsight |
-| `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` | `http://localhost:8000/v1` | Where the embeddings endpoint lives (local LiteLLM by default) |
-| `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` | `sk-local-litellm` | Placeholder for the local proxy. Replace if pointing to a real API. |
-| `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL` | `jina-embeddings-v5-text-small-retrieval-mlx` | Default embedding model (Jina MLX local) |
-| `HINDSIGHT_API_RERANKER_PROVIDER` | `cohere` | Reranker provider name |
-| `HINDSIGHT_API_RERANKER_COHERE_BASE_URL` | `http://localhost:4000/v1/rerank` | Reranker endpoint |
-| `HINDSIGHT_API_RERANKER_COHERE_API_KEY` | `sk-local-litellm` | Placeholder for the local proxy |
-| `HINDSIGHT_API_RERANKER_COHERE_MODEL` | `rerank` | Default reranker model |
+For example, this configuration selects approved writes with OpenViking and leaves automatic recall and reflection off:
 
-Plugin-internal storage:
+```json
+{
+  "ingest": { "mode": "approved_writes" },
+  "approved": {
+    "backends": ["openviking"],
+    "prefetch": false,
+    "reflect": false
+  }
+}
+```
 
-- `fact_store.db` — SQLite store for date tags, repetition counters, forgotten signatures. Created on first run.
-- `recovery_cursor.json` — offset into `~/.hermes/sessions/` for crash-recovery imports.
+Also enable `memory.write_approval: true` in Hermes and configure OpenViking's connection settings. Configure the mode before starting the gateway; an environment variable set only in an interactive shell may not reach an already-running service.
 
-Both are gitignored — they are local runtime state, not part of the plugin.
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `MNEMOSYNE_INGEST_MODE` | `turns` | Select `turns` or `approved_writes` |
+| `MNEMOSYNE_APPROVED_BACKENDS` | `openviking` | Comma-separated approved backends: `openviking`, `hindsight` |
+| `MNEMOSYNE_APPROVED_PREFETCH` | `false` | Automatically recall approved entries each turn |
+| `MNEMOSYNE_APPROVED_REFLECT` | `false` | Expose Hindsight reflection in approved mode |
+| `MNEMOSYNE_HINDSIGHT_URL` | Empty | Hindsight endpoint for approved writes |
+| `MNEMOSYNE_PREFETCH_MAX_TOKENS` | `4500` | Conversation prefetch budget |
+| `MNEMOSYNE_TIMEOUT_RECALL` | `180` | Recall tool timeout, in seconds |
+| `MNEMOSYNE_RECOVERY_ENABLED` | `true` | Enable conversation-mode startup recovery |
 
-## Approved-writes mode
+### Conversation backend routing
 
-For deployments where a human must approve what the agent remembers, set `ingest.mode` to `approved_writes` (or `MNEMOSYNE_INGEST_MODE=approved_writes`) together with `memory.write_approval: true` in Hermes. Mnemosyne then registers a different provider whose backends hold exactly the entries of Hermes' built-in memory files — `MEMORY.md` and `USER.md` under the profile's `memories/` — and nothing else: no conversation turns, session ends, compressions or delegations, and no memory written by a backend's own LLM.
+The conversation provider supplies these Hindsight defaults when the corresponding environment variables are unset. Override them in the gateway environment or the `hindsight_env` object in `config.json`; nonempty environment values take precedence.
 
-**Why the files, not `on_memory_write`.** Hermes stages a memory write for approval whenever no inline approval prompt is available (always on the gateway), and `/memory approve` later applies it to the files without calling memory providers. The files are therefore the only view of approved memory that every approval path reaches. Each entry gets an id from a hash of its text, and a *reconcile* makes a backend hold exactly the set in the files: new ids are stored, ids no longer in the file are deleted. It runs after `initialize`, after each `on_memory_write`, and at turn start when the files changed. A file that exists — even empty — drives deletions; a file that is missing or unreadable leaves that target's copies untouched (a file that disappears is logged with the purge command), and a backend whose listing fails is skipped for that round. Cron, subagent and flush sessions read but never reconcile.
+| Setting | Default |
+| --- | --- |
+| `HINDSIGHT_API_EMBEDDINGS_PROVIDER` | `openai` |
+| `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` | `http://localhost:8000/v1` |
+| `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL` | `jina-embeddings-v5-text-small-retrieval-mlx` |
+| `HINDSIGHT_API_RERANKER_PROVIDER` | `cohere` |
+| `HINDSIGHT_API_RERANKER_COHERE_BASE_URL` | `http://localhost:4000/v1/rerank` |
+| `HINDSIGHT_API_RERANKER_COHERE_MODEL` | `rerank` |
 
-**Isolation is per profile.** Hermes' built-in memory belongs to the profile and is injected into every session of it, so rooms whose members differ need one Hermes profile each, each with its own backend credentials in its `.env`. Mnemosyne namespaces everything by profile (`sha256(profile:home)[:16]`), but path prefixes and bank names are not a server-enforced boundary: give each profile its own OpenViking user/API key and Hindsight bank credentials.
+Both `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` and `HINDSIGHT_API_RERANKER_COHERE_API_KEY` default to the local placeholder `sk-local-litellm`. Set credentials appropriate to your services.
 
-| Setting | Env var | Default | Effect |
-|---|---|---|---|
-| `ingest.mode` | `MNEMOSYNE_INGEST_MODE` | `turns` | `approved_writes` selects this mode |
-| `approved.backends` | `MNEMOSYNE_APPROVED_BACKENDS` | `["openviking"]` | any of `openviking`, `hindsight`; anything else (Honcho included) fails closed |
-| `approved.prefetch` | `MNEMOSYNE_APPROVED_PREFETCH` | `false` | inject matching entries every turn (sends the user's message to the backends as a query) |
-| `approved.reflect` | `MNEMOSYNE_APPROVED_REFLECT` | `false` | expose `memory_reflect` (Hindsight, an LLM call the server traces by default) |
-| `hindsight_direct.api_url` | `MNEMOSYNE_HINDSIGHT_URL` / `HINDSIGHT_API_URL` | — | required for the Hindsight backend; the key comes from `HINDSIGHT_API_KEY`; Hindsight Cloud is refused unless `hindsight_direct.allow_cloud` |
+### Local state
 
-The provider starts without memory and enables itself only at the end of an `initialize` that got the profile's `hermes_home` from Hermes and connected at least one backend; any failure leaves the session without memory rather than with a shared or default store. Tools: `memory_recall` (search the approved entries), `memory_read` (one OpenViking entry by URI), `memory_reflect` (opt-in). `memory_forget`, `memory_conclude`, `memory_profile` and the Honcho tools do not exist in this mode: removal is a `remove` through Hermes' approved `memory` tool.
+Runtime files live under the profile's plugin directory:
 
-Commands: `hermes mnemosyne reconcile` runs a reconcile now; `hermes mnemosyne purge --yes` deletes everything the profile's namespace holds in every backend. `import` and `forget` refuse to run in this mode.
+| File | Purpose |
+| --- | --- |
+| `config.json` | Optional local configuration |
+| `anchor_card.md` | Pinned facts for conversation prefetch |
+| `fact_store.db` | Fact metadata, repetition counts, and forgotten signatures |
+| `recovery_cursor.json` | Startup replay progress |
+| `import_cursor.json` | Bulk import progress |
 
-### OpenViking
+The database and cursor files are gitignored. `config.json` and `anchor_card.md` are not currently ignored; keep local configuration and personal facts out of commits. Approved mode uses the profile's `memories/MEMORY.md` and `memories/USER.md` as its source of truth.
 
-Mnemosyne uses the Hermes OpenViking plugin's HTTP client and connection settings (`OPENVIKING_*`) but not its provider, which uploads every turn and commits sessions — each commit makes the server extract memories with its own LLM. Entries are plain files at `viking://user/<space>/memories/mnemosyne/<ns>/<target>/mem_<id>.md`, written with `mode=create`, `processing_mode=vectors_only` and `wait=true` (searchable as soon as the write returns). Writes under `memories/` run no LLM on the server; the server does linkify bare `viking://` URIs inside the text. Search is `find` below the root with `read_content`, so recall returns the stored files' text. Do not run a `semantic_and_vectors` reindex over this namespace (it would send the files to the VLM), and consider `memory.extraction_enabled=false` on the server if nothing else of this user needs session extraction.
+## Update or roll back
 
-### Hindsight
-
-Mnemosyne talks to the Hindsight API with `hindsight_client` instead of Hermes' Hindsight provider, which retains through LLM extraction and recalls LLM-consolidated observations only. Each profile gets bank `mnemosyne-<ns>`, configured at connect time with `retain_extraction_mode=chunks` (stored verbatim, no LLM), observations and auto-consolidation off and `store_document_text`; the backend refuses to run unless the server reports that configuration back. Each entry is document `mn-<target>-<id>`, so removal deletes the document and its memory units. Recall asks for `world` facts only. On a shared server set `HINDSIGHT_API_LLM_TRACE_ENABLED=false`: the server otherwise keeps every LLM prompt (reflect queries included) for a day.
-
-## Tools exposed to the LLM
-
-| Tool | Purpose |
-|---|---|
-| `memory_profile` | Read or update the user's profile card (name, role, communication style, stable preferences). Routes to Honcho. |
-| `memory_reasoning` | Questions *about the user as a person* — style, habits, behavioural patterns, what works best with them. Routes to Honcho. |
-| `memory_conclude` | Record a stable user-related conclusion (preference, habit, style). Routes to Honcho. |
-| `memory_recall` | **The main long-term memory tool.** "Do you remember when…", "we discussed this", multi-strategy semantic + entity-graph search over all past conversations. Routes to Hindsight. |
-| `memory_reflect` | LLM synthesis across past-conversation facts — summaries spanning multiple sources ("what did we conclude about X?"). Routes to Hindsight. |
-| `memory_forget` | Explicit forgetting via signature soft-delete. Implemented inside the composite layer. |
-
-These are the default mode's tools; approved-writes mode has its own set (see above).
-
-## Hooks
-
-Mnemosyne hooks into Hermes at six lifecycle points (declared in `plugin.yaml`):
-
-- `on_memory_write` — intercept memory store operations.
-- `on_session_end` — finalize state at session end.
-- `on_session_switch` — handle multi-session context.
-- `on_pre_compress` — pre-compression deduplication.
-- `on_delegation` — agent delegation events.
-- `on_turn_start` — per-turn initialization.
-
-## Updating
-
-When new commits land on `main`:
+For a checkout installed from this fork:
 
 ```bash
-cd ~/.hermes/plugins/mnemosyne
-git pull
-./install.sh              # reinstalls deps if requirements changed
+cd "${HERMES_HOME:-$HOME/.hermes}/plugins/mnemosyne"
+git pull --ff-only
+# Run ./install.sh if Python dependencies changed.
 hermes gateway restart
 ```
 
-Your runtime data (`fact_store.db`, `recovery_cursor.json`) is gitignored and survives updates.
+Keep local runtime state when updating. To switch away, select your previous provider and restart; for example, if it was Honcho:
 
-## Contributing
-
-Python implementation lives in `src/mnemosyne/`, with tests in `tests/`:
-
-```text
-src/mnemosyne/
-  __init__.py       # public provider exports
-  provider.py       # composite provider and registration policy
-  prefetch.py       # parallel reads, anchor/profile caches and invalidation
-  extraction_filter.py # prevents reingesting repeated recalled context
-  tool_schemas.py   # composite tool definitions and routing metadata
-  recall_processing.py # recall formatting, filtering and conflict labels
-  commands.py       # hermes mnemosyne subcommands
-  approved.py       # approved-writes provider
-  ...               # configuration, stores and memory helpers
-tests/
-__init__.py         # Hermes directory discovery adapter
-cli.py              # Hermes CLI discovery adapter
-plugin.yaml
-pyproject.toml
+```bash
+hermes config set memory.provider honcho
+hermes gateway restart
 ```
 
-The two root Python files are small adapters required by Hermes' directory
-loader. Keep business logic inside the package. Both a Git checkout and the Nix
-output include `src/`; installation into Hermes still uses the plugin directory
-and `./install.sh`, without requiring a wheel or changes to `PYTHONPATH`.
-`pyproject.toml` discovers the Python package under `src/` for packaging tools.
+## Development
 
-Use `nix develop` (or `direnv allow`), then `just test` to run the suite and
-`just check` for the complete CI gate. Tests import the source package normally
-and separately exercise Hermes' provider-first and CLI-first discovery paths.
+```bash
+nix develop
+just test
+just lint
+just fmt
+just check
+```
 
-Contributions and bug reports are very welcome. Standard GitHub flow:
+| Command | What it verifies or changes |
+| --- | --- |
+| `just test` | Runs the pytest suite |
+| `just lint` | Runs Ruff without changing files |
+| `just fmt` | Applies safe Ruff fixes and formats supported files through treefmt-nix |
+| `just check` | Runs the Nix CI gate: plugin build, tests, lint, and formatting |
+| `just build` | Builds the plugin directory at `result/share/hermes/plugins/mnemosyne` |
 
-1. **Issues** — open an issue describing the problem or feature idea.
-1. **Pull requests** — fork, branch, commit, push, open a PR against `main`.
+Nix reads Git-tracked files: **stage new files before running Nix commands**. Ruff selects `E4`, `E7`, `E9`, `F`, and `I`, targeting Python 3.11.
 
-Before submitting a PR:
+```text
+__init__.py, cli.py       Hermes directory and CLI discovery adapters
+src/mnemosyne/
+  provider.py            Conversation provider and lifecycle
+  tool_schemas.py        Tool schemas and dispatch metadata
+  prefetch.py            Parallel prefetch and caches
+  recall_processing.py   Recall formatting, filtering, and deduplication
+  extraction_filter.py   Filters prefetched assistant text before ingestion
+  approved.py, policy.py Approved-writes provider and write policy
+  commands.py            CLI implementation
+  ...                    Backend stores and memory helpers
+tests/                   Unit and provider behavior tests
+docs/                    Approved-writes guide and project artwork
+nix/                     Development shell, formatter, and plugin package
+```
 
-- Verify your change works on both **macOS** and **Linux** if it touches `install.sh` or filesystem paths.
-- Run `just fmt` to apply safe Ruff lint fixes and format the code. `just lint` checks Python without changing files; `just check` runs the CI gate (build, tests, lint, and formatting).
-- Keep commits focused — one concern per commit.
+Tests stub Hermes and backend services. They cover both provider modes and provider-first/CLI-first loading, but do not replace a smoke test against a real Hermes installation. Keep changes focused and include behavior tests when changing memory handling. See [AGENTS.md](AGENTS.md) for repository conventions.
 
-## License
+## Credits and license
 
-[Apache-2.0](LICENSE)
+This fork builds on [johnnykor82/mnemosyne](https://github.com/johnnykor82/mnemosyne). Conversation memory integrates Honcho and Hindsight through Hermes; approved memory supports OpenViking and Hindsight.
 
-## Roadmap
-
-| Stage | Status | What |
-|---|---|---|
-| Scaffold (Stage A) | ✅ current | Fan-out delegation, union of inner tool schemas |
-| 1, 2 | planned | Date tags + repetition counter (SQLite `fact_store`) |
-| 3 | planned | Pre-write dedup — short recall before each `retain` |
-| 5 | planned | Anchor card — manually-curated pinned facts always in prefetch |
-| 6 | planned | Curated tools — six renamed `memory_*` with tight role descriptions |
-| 6′ | planned | Conflict resolver — two-voice display when Honcho and Hindsight disagree |
-| 7 | planned | Prefetch fusion — anchor → Honcho peer card → Hindsight recall |
-| 7′ | planned | Recovery — re-send transcripts from `~/.hermes/sessions/` after crashes |
-| 8 | planned | Bulk import — last 90 days of session transcripts on demand |
-| 10 | planned | Built-in memory bridge — `on_memory_write` → Hindsight with `mention_count=10` |
-| 11 | planned | Forgetting — `memory_forget` tool + CLI, soft-delete via `forgotten:` tag |
+Named after Mnemosyne, the Greek Titaness of memory. Licensed under [Apache-2.0](LICENSE).
