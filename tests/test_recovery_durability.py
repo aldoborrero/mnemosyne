@@ -4,6 +4,7 @@ The regression: the cursor advanced by `len(pairs)` regardless of whether
 Hindsight accepted them, so a mid-run failure silently skipped those turns
 forever — in the one component whose whole job is not losing turns.
 """
+
 from __future__ import annotations
 
 import json

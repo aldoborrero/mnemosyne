@@ -66,17 +66,22 @@ class OpenVikingStore:
         """Store for one profile namespace, or None when the server is unusable."""
         try:
             ov = _ov_module()
-            settings = ov._resolve_connection_settings(ov._load_hermes_openviking_config())
+            settings = ov._resolve_connection_settings(
+                ov._load_hermes_openviking_config()
+            )
             if not settings.get("endpoint"):
                 return None
             client = ov._VikingClient(
-                settings["endpoint"], settings.get("api_key", ""),
+                settings["endpoint"],
+                settings.get("api_key", ""),
                 account=settings.get("account") or None,
                 user=settings.get("user") or None,
                 agent=settings.get("agent"),
             )
             if not client.health():
-                logger.warning("mnemosyne: OpenViking at %s is not healthy", settings["endpoint"])
+                logger.warning(
+                    "mnemosyne: OpenViking at %s is not healthy", settings["endpoint"]
+                )
                 return None
             # The server-asserted user, so URIs never land in another tenant's space.
             user_space = ov._resolve_user_space(client)
@@ -101,29 +106,42 @@ class OpenVikingStore:
     def owns(self, uri: str) -> bool:
         if not isinstance(uri, str) or not uri.startswith(self.root):
             return False
-        rest = uri[len(self.root):]
-        return bool(rest) and all(part not in ("", ".", "..") for part in rest.split("/"))
+        rest = uri[len(self.root) :]
+        return bool(rest) and all(
+            part not in ("", ".", "..") for part in rest.split("/")
+        )
 
     def list_ids(self, target: str) -> Set[str]:
         ids: Set[str] = set()
         offset = 0
         while True:
             try:
-                resp = self._client.get("/api/v1/fs/ls", params={
-                    "uri": self._dir(target), "node_limit": _PAGE, "offset": offset})
+                resp = self._client.get(
+                    "/api/v1/fs/ls",
+                    params={
+                        "uri": self._dir(target),
+                        "node_limit": _PAGE,
+                        "offset": offset,
+                    },
+                )
             except Exception as exc:
                 if _status(exc) == 404 and offset == 0:
                     return ids  # never written
                 raise
             result = (resp or {}).get("result", resp)
             if isinstance(result, dict):
-                result = result.get("entries") or result.get("items") or result.get("children") or []
+                result = (
+                    result.get("entries")
+                    or result.get("items")
+                    or result.get("children")
+                    or []
+                )
             entries = result if isinstance(result, list) else []
             for entry in entries:
                 uri = entry.get("uri", "") if isinstance(entry, dict) else ""
                 name = uri.rsplit("/", 1)[-1]
                 if self.owns(uri) and name.startswith("mem_") and name.endswith(".md"):
-                    ids.add(name[len("mem_"):-len(".md")])
+                    ids.add(name[len("mem_") : -len(".md")])
             if len(entries) < _PAGE:
                 return ids
             offset += _PAGE
@@ -132,16 +150,27 @@ class OpenVikingStore:
 
     def put(self, target: str, entry: str, content: str) -> None:
         try:
-            self._client.post("/api/v1/content/write", {
-                "uri": self.uri(target, entry), "content": content, "mode": "create",
-                "processing_mode": "vectors_only", "wait": True, "timeout": _WRITE_TIMEOUT_S})
+            self._client.post(
+                "/api/v1/content/write",
+                {
+                    "uri": self.uri(target, entry),
+                    "content": content,
+                    "mode": "create",
+                    "processing_mode": "vectors_only",
+                    "wait": True,
+                    "timeout": _WRITE_TIMEOUT_S,
+                },
+            )
         except Exception as exc:
             if _status(exc) != 409:  # already stored under its content hash
                 raise
 
     def delete(self, target: str, entry: str) -> None:
         try:
-            self._client.delete("/api/v1/fs", params={"uri": self.uri(target, entry), "recursive": False})
+            self._client.delete(
+                "/api/v1/fs",
+                params={"uri": self.uri(target, entry), "recursive": False},
+            )
         except Exception as exc:
             if _status(exc) != 404:
                 raise
@@ -149,7 +178,9 @@ class OpenVikingStore:
     def purge(self) -> None:
         """Delete this namespace's whole subtree."""
         try:
-            self._client.delete("/api/v1/fs", params={"uri": self.root, "recursive": True})
+            self._client.delete(
+                "/api/v1/fs", params={"uri": self.root, "recursive": True}
+            )
         except Exception as exc:
             if _status(exc) != 404:
                 raise
@@ -158,16 +189,29 @@ class OpenVikingStore:
 
     def find(self, query: str, *, limit: int = 10) -> List[Dict[str, Any]]:
         """Search below the root; results outside it are dropped even if the server returns them."""
-        resp = self._client.post("/api/v1/search/find", {
-            "query": query, "target_uri": self.root, "limit": limit,
-            "score_threshold": _SCORE_THRESHOLD, "context_type": "memory", "read_content": True})
+        resp = self._client.post(
+            "/api/v1/search/find",
+            {
+                "query": query,
+                "target_uri": self.root,
+                "limit": limit,
+                "score_threshold": _SCORE_THRESHOLD,
+                "context_type": "memory",
+                "read_content": True,
+            },
+        )
         result = (resp or {}).get("result") or {}
         items = []
         for item in result.get("memories") or []:
             uri = item.get("uri", "")
             if self.owns(uri):
-                items.append({"uri": uri, "score": item.get("score") or 0.0,
-                              "content": (item.get("content") or "").strip()})
+                items.append(
+                    {
+                        "uri": uri,
+                        "score": item.get("score") or 0.0,
+                        "content": (item.get("content") or "").strip(),
+                    }
+                )
         items.sort(key=lambda it: it["score"], reverse=True)
         return items
 

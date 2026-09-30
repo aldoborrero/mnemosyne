@@ -5,6 +5,7 @@ The files (MEMORY.md, USER.md) are the source of truth because Hermes'
 the reconciliation, the provider's fail-closed lifecycle and both stores
 against recording doubles of their HTTP clients.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,8 +30,14 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "memories").mkdir()
     (tmp_path / "plugins" / "mnemosyne").mkdir(parents=True)
-    for var in ("MNEMOSYNE_INGEST_MODE", "MNEMOSYNE_APPROVED_BACKENDS", "MNEMOSYNE_APPROVED_PREFETCH",
-                "MNEMOSYNE_APPROVED_REFLECT", "MNEMOSYNE_HINDSIGHT_URL", "HINDSIGHT_API_URL"):
+    for var in (
+        "MNEMOSYNE_INGEST_MODE",
+        "MNEMOSYNE_APPROVED_BACKENDS",
+        "MNEMOSYNE_APPROVED_PREFETCH",
+        "MNEMOSYNE_APPROVED_REFLECT",
+        "MNEMOSYNE_HINDSIGHT_URL",
+        "HINDSIGHT_API_URL",
+    ):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
 
@@ -70,6 +77,7 @@ class _MemStore:
 # memory files and reconcile
 # ---------------------------------------------------------------------------
 
+
 def test_read_distinguishes_missing_from_empty(home):
     assert memory_files.read_target(str(home), "user").entries is None
     assert memory_files.read_target(str(home), "user").missing
@@ -87,7 +95,10 @@ def test_reconcile_creates_and_deletes_by_content_id(home):
     # Hermes replaced by substring: the file now holds a different set.
     _write(home, "memory", ["deploy key is in the new vault", "prod is eu-west"])
     out = reconcile(store, memory_files.read_all(str(home)))
-    assert store.texts("memory") == ["deploy key is in the new vault", "prod is eu-west"]
+    assert store.texts("memory") == [
+        "deploy key is in the new vault",
+        "prod is eu-west",
+    ]
     assert (out.created, out.deleted) == (1, 1)
 
 
@@ -113,6 +124,7 @@ def test_reconcile_skips_a_backend_whose_listing_fails(home):
 # provider lifecycle
 # ---------------------------------------------------------------------------
 
+
 def _provider(home, monkeypatch, *, backends="openviking", store=None, **env):
     monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
     monkeypatch.setenv("MNEMOSYNE_APPROVED_BACKENDS", backends)
@@ -120,8 +132,11 @@ def _provider(home, monkeypatch, *, backends="openviking", store=None, **env):
         monkeypatch.setenv(k, v)
     store = store if store is not None else _MemStore("openviking")
     store.owns = lambda uri: isinstance(uri, str) and uri.startswith(ROOT)
-    store.find = lambda q, limit=10: [{"uri": ROOT + "memory/mem_" + k + ".md", "score": 1.0, "content": v}
-                                      for k, v in store.data["memory"].items() if q.split()[0] in v]
+    store.find = lambda q, limit=10: [
+        {"uri": ROOT + "memory/mem_" + k + ".md", "score": 1.0, "content": v}
+        for k, v in store.data["memory"].items()
+        if q.split()[0] in v
+    ]
     store.read = lambda uri: "full text"
     store.close = lambda: None
     monkeypatch.setattr(OpenVikingStore, "connect", classmethod(lambda cls, ns: store))
@@ -129,8 +144,14 @@ def _provider(home, monkeypatch, *, backends="openviking", store=None, **env):
 
 
 def _init(p, home, **kw):
-    p.initialize("s1", hermes_home=str(home), agent_identity="team-a", platform="matrix",
-                 agent_context=kw.pop("agent_context", "primary"), **kw)
+    p.initialize(
+        "s1",
+        hermes_home=str(home),
+        agent_identity="team-a",
+        platform="matrix",
+        agent_context=kw.pop("agent_context", "primary"),
+        **kw,
+    )
     assert p.flush()
 
 
@@ -200,7 +221,9 @@ def test_unsupported_backends_fail_closed(home, monkeypatch, backends):
 def test_empty_backends_fail_closed(home, monkeypatch):
     p, _ = _provider(home, monkeypatch)
     monkeypatch.delenv("MNEMOSYNE_APPROVED_BACKENDS")
-    (home / "plugins" / "mnemosyne" / "config.json").write_text(json.dumps({"approved": {"backends": []}}))
+    (home / "plugins" / "mnemosyne" / "config.json").write_text(
+        json.dumps({"approved": {"backends": []}})
+    )
     _init(p, home)
     assert p._blocked and "empty" in p._disabled_reason
 
@@ -238,8 +261,15 @@ def test_tools_recall_read_and_reflect_opt_in(home, monkeypatch):
     _init(p, home)
     out = json.loads(p.handle_tool_call("memory_recall", {"query": "deploy"}))["result"]
     assert "deploy key is in vault" in out and ROOT in out
-    assert "error" in json.loads(p.handle_tool_call("memory_read", {"uri": "viking://user/alice/x.md"}))
-    assert json.loads(p.handle_tool_call("memory_read", {"uri": ROOT + "memory/mem_x.md"}))["content"] == "full text"
+    assert "error" in json.loads(
+        p.handle_tool_call("memory_read", {"uri": "viking://user/alice/x.md"})
+    )
+    assert (
+        json.loads(
+            p.handle_tool_call("memory_read", {"uri": ROOT + "memory/mem_x.md"})
+        )["content"]
+        == "full text"
+    )
     assert "error" in json.loads(p.handle_tool_call("memory_reflect", {"query": "x"}))
     assert "memory_forget" not in [s["name"] for s in p.get_tool_schemas()]
     assert "built-in `memory` tool" in p.system_prompt_block()
@@ -282,6 +312,7 @@ def test_register_selects_provider_by_mode(home, monkeypatch):
 # OpenViking store
 # ---------------------------------------------------------------------------
 
+
 class _HTTPError(RuntimeError):
     def __init__(self, status):
         super().__init__(f"HTTP {status}")
@@ -302,8 +333,11 @@ class _VikingClient:
             self.files[payload["uri"]] = payload["content"]
             return {"result": {}}
         if path == "/api/v1/search/find":
-            hits = [{"uri": u, "score": 0.9, "content": c} for u, c in self.files.items()
-                    if u.startswith(payload["target_uri"]) and payload["query"] in c]
+            hits = [
+                {"uri": u, "score": 0.9, "content": c}
+                for u, c in self.files.items()
+                if u.startswith(payload["target_uri"]) and payload["query"] in c
+            ]
             return {"result": {"memories": hits + self.extra}}
         raise AssertionError(path)
 
@@ -313,8 +347,11 @@ class _VikingClient:
             under = [u for u in self.files if u.startswith(params["uri"])]
             if not under:
                 raise _HTTPError(404)
-            page = under[params["offset"]:params["offset"] + params["node_limit"]]
-            return {"result": [{"uri": u} for u in page] + [{"uri": params["uri"] + ".overview.md"}]}
+            page = under[params["offset"] : params["offset"] + params["node_limit"]]
+            return {
+                "result": [{"uri": u} for u in page]
+                + [{"uri": params["uri"] + ".overview.md"}]
+            }
         if path == "/api/v1/content/read":
             return {"result": self.files[params["uri"]]}
         raise AssertionError(path)
@@ -323,44 +360,81 @@ class _VikingClient:
         self.calls.append(("DELETE", path, params))
         if params["uri"] not in self.files and not params.get("recursive"):
             raise _HTTPError(404)
-        for u in [u for u in self.files if u == params["uri"] or (params.get("recursive") and u.startswith(params["uri"]))]:
+        for u in [
+            u
+            for u in self.files
+            if u == params["uri"]
+            or (params.get("recursive") and u.startswith(params["uri"]))
+        ]:
             del self.files[u]
         return {"result": {}}
 
 
 def test_openviking_store_ids_writes_and_scope():
-    client = _VikingClient(extra=[{"uri": "viking://user/alice/memories/other/x.md", "score": 1, "content": "leak"}])
+    client = _VikingClient(
+        extra=[
+            {
+                "uri": "viking://user/alice/memories/other/x.md",
+                "score": 1,
+                "content": "leak",
+            }
+        ]
+    )
     store = OpenVikingStore(client, "alice", "ns1")
-    assert store.list_ids("memory") == set()          # 404: never written
+    assert store.list_ids("memory") == set()  # 404: never written
     store.put("memory", "abc", "deploy key")
-    store.put("memory", "abc", "deploy key")          # 409 is success
+    store.put("memory", "abc", "deploy key")  # 409 is success
     write = [c for c in client.calls if c[1] == "/api/v1/content/write"][0][2]
-    assert write["wait"] is True and write["processing_mode"] == "vectors_only" and write["mode"] == "create"
+    assert (
+        write["wait"] is True
+        and write["processing_mode"] == "vectors_only"
+        and write["mode"] == "create"
+    )
     assert store.list_ids("memory") == {"abc"}
     found = store.find("deploy")
-    assert [f["uri"] for f in found] == [ROOT + "memory/mem_abc.md"] and found[0]["content"] == "deploy key"
+    assert [f["uri"] for f in found] == [ROOT + "memory/mem_abc.md"] and found[0][
+        "content"
+    ] == "deploy key"
     find = [c for c in client.calls if c[1] == "/api/v1/search/find"][0][2]
-    assert find["read_content"] is True and find["target_uri"] == ROOT and find["score_threshold"]
+    assert (
+        find["read_content"] is True
+        and find["target_uri"] == ROOT
+        and find["score_threshold"]
+    )
     store.delete("memory", "abc")
-    store.delete("memory", "abc")                     # 404 is success
+    store.delete("memory", "abc")  # 404 is success
     assert store.list_ids("memory") == set()
     assert not any("session" in c[1] for c in client.calls)
 
 
 def test_openviking_list_paginates(monkeypatch):
     from _hermes_user_memory.mnemosyne import openviking_store
+
     monkeypatch.setattr(openviking_store, "_PAGE", 2)
     client = _VikingClient(files={ROOT + f"user/mem_{i}.md": "x" for i in range(5)})
-    assert OpenVikingStore(client, "alice", "ns1").list_ids("user") == {str(i) for i in range(5)}
+    assert OpenVikingStore(client, "alice", "ns1").list_ids("user") == {
+        str(i) for i in range(5)
+    }
 
 
-@pytest.mark.parametrize("uri", ["viking://user/alice/x.md", ROOT, ROOT + "../x.md", ROOT + "a//b.md", ROOT + "./a.md"])
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "viking://user/alice/x.md",
+        ROOT,
+        ROOT + "../x.md",
+        ROOT + "a//b.md",
+        ROOT + "./a.md",
+    ],
+)
 def test_openviking_owns_rejects(uri):
     assert not OpenVikingStore(_VikingClient(), "alice", "ns1").owns(uri)
 
 
 def test_openviking_purge_is_recursive_on_the_root():
-    client = _VikingClient(files={ROOT + "memory/mem_a.md": "a", "viking://user/alice/other.md": "keep"})
+    client = _VikingClient(
+        files={ROOT + "memory/mem_a.md": "a", "viking://user/alice/other.md": "keep"}
+    )
     OpenVikingStore(client, "alice", "ns1").purge()
     assert list(client.files) == ["viking://user/alice/other.md"]
 
@@ -369,14 +443,19 @@ def test_openviking_purge_is_recursive_on_the_root():
 # Hindsight store
 # ---------------------------------------------------------------------------
 
+
 class _Docs:
     def __init__(self, owner):
         self.o = owner
 
-    async def list_documents(self, bank, tags=None, tags_match=None, limit=100, offset=0):
+    async def list_documents(
+        self, bank, tags=None, tags_match=None, limit=100, offset=0
+    ):
         self.o.calls.append(("list", bank, tuple(tags), tags_match))
         ids = sorted(d for d, t in self.o.docs.items() if set(tags) <= set(t["tags"]))
-        return types.SimpleNamespace(items=[types.SimpleNamespace(id=i) for i in ids[offset:offset + limit]])
+        return types.SimpleNamespace(
+            items=[types.SimpleNamespace(id=i) for i in ids[offset : offset + limit]]
+        )
 
     async def delete_document(self, bank, doc):
         self.o.calls.append(("delete", bank, doc))
@@ -391,8 +470,15 @@ class _HindsightClient:
     def __init__(self, config=None):
         self.calls = []
         self.docs = {}
-        self.config = config if config is not None else {
-            "retain_extraction_mode": "chunks", "enable_observations": False, "enable_auto_consolidation": False}
+        self.config = (
+            config
+            if config is not None
+            else {
+                "retain_extraction_mode": "chunks",
+                "enable_observations": False,
+                "enable_auto_consolidation": False,
+            }
+        )
         self.documents = _Docs(self)
 
     def create_bank(self, bank, **kw):
@@ -407,11 +493,18 @@ class _HindsightClient:
     def retain_batch(self, bank, items):
         self.calls.append(("retain", bank, items))
         for it in items:
-            self.docs[it["document_id"]] = {"tags": it["tags"], "content": it["content"]}
+            self.docs[it["document_id"]] = {
+                "tags": it["tags"],
+                "content": it["content"],
+            }
 
     def recall(self, bank, query, **kw):
         self.calls.append(("recall", bank, kw))
-        return types.SimpleNamespace(results=[types.SimpleNamespace(text=d["content"]) for d in self.docs.values()])
+        return types.SimpleNamespace(
+            results=[
+                types.SimpleNamespace(text=d["content"]) for d in self.docs.values()
+            ]
+        )
 
     def reflect(self, bank, query, **kw):
         self.calls.append(("reflect", bank, kw))
@@ -432,14 +525,30 @@ def test_hindsight_bank_is_configured_verbatim_without_observations(home, monkey
     assert store is not None and store.bank_id == "mnemosyne-ns1"
     create = [c for c in client.calls if c[0] == "create_bank"][0][2]
     update = [c for c in client.calls if c[0] == "update_bank_config"][0][2]
-    assert create["retain_extraction_mode"] == "chunks" and create["enable_observations"] is False
-    assert update["enable_auto_consolidation"] is False and update["store_document_text"] is True
+    assert (
+        create["retain_extraction_mode"] == "chunks"
+        and create["enable_observations"] is False
+    )
+    assert (
+        update["enable_auto_consolidation"] is False
+        and update["store_document_text"] is True
+    )
     store.close()
 
 
 def test_hindsight_refuses_unverified_config_and_cloud(home, monkeypatch):
-    assert _hindsight(monkeypatch, _HindsightClient(config={"retain_extraction_mode": "concise"})) is None
-    assert _hindsight(monkeypatch, _HindsightClient(), url="https://api.hindsight.vectorize.io") is None
+    assert (
+        _hindsight(
+            monkeypatch, _HindsightClient(config={"retain_extraction_mode": "concise"})
+        )
+        is None
+    )
+    assert (
+        _hindsight(
+            monkeypatch, _HindsightClient(), url="https://api.hindsight.vectorize.io"
+        )
+        is None
+    )
     monkeypatch.setenv("MNEMOSYNE_HINDSIGHT_URL", "")
     assert HindsightStore.connect("ns1") is None
 
@@ -449,17 +558,22 @@ def test_hindsight_documents_by_content_id(home, monkeypatch):
     store = _hindsight(monkeypatch, client)
     store.put("user", "abc", "likes tea")
     retain = [c for c in client.calls if c[0] == "retain"][0][2][0]
-    assert retain["document_id"] == "mn-user-abc" and retain["tags"] == ["mnemosyne", "target:user"]
+    assert retain["document_id"] == "mn-user-abc" and retain["tags"] == [
+        "mnemosyne",
+        "target:user",
+    ]
     assert store.list_ids("user") == {"abc"} and store.list_ids("memory") == set()
     store.delete("user", "abc")
-    store.delete("user", "abc")                       # 404 is success
+    store.delete("user", "abc")  # 404 is success
     assert client.docs == {}
     store.recall("tea")
     store.reflect("tea")
     recall = [c for c in client.calls if c[0] == "recall"][0][2]
     reflect = [c for c in client.calls if c[0] == "reflect"][0][2]
     assert recall["types"] == ["world"] and recall["tags"] == ["mnemosyne"]
-    assert reflect["fact_types"] == ["world"] and reflect["exclude_mental_models"] is True
+    assert (
+        reflect["fact_types"] == ["world"] and reflect["exclude_mental_models"] is True
+    )
     store.close()
 
 
@@ -468,7 +582,9 @@ def test_hindsight_reflect_needs_opt_in(home, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
     monkeypatch.setenv("MNEMOSYNE_APPROVED_BACKENDS", "hindsight")
     store = _hindsight(monkeypatch, client)
-    monkeypatch.setattr(HindsightStore, "connect", classmethod(lambda cls, ns, home=None: store))
+    monkeypatch.setattr(
+        HindsightStore, "connect", classmethod(lambda cls, ns, home=None: store)
+    )
     p = ApprovedMemoryProvider()
     _init(p, home)
     assert [s["name"] for s in p.get_tool_schemas()] == ["memory_recall"]
@@ -476,16 +592,20 @@ def test_hindsight_reflect_needs_opt_in(home, monkeypatch):
     p2 = ApprovedMemoryProvider()
     _init(p2, home)
     assert "memory_reflect" in [s["name"] for s in p2.get_tool_schemas()]
-    assert json.loads(p2.handle_tool_call("memory_reflect", {"query": "x"}))["result"] == "answer"
+    assert (
+        json.loads(p2.handle_tool_call("memory_reflect", {"query": "x"}))["result"]
+        == "answer"
+    )
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def test_cli_gates(home, monkeypatch, capsys):
     ns = types.SimpleNamespace
-    assert cli.mnemosyne_command(ns(action="reconcile")) == 2        # not in approved mode
+    assert cli.mnemosyne_command(ns(action="reconcile")) == 2  # not in approved mode
     monkeypatch.setenv("MNEMOSYNE_INGEST_MODE", "approved_writes")
     assert cli.mnemosyne_command(ns(action="purge", yes=False)) == 2
     assert cli._cmd_import(ns(days=None, min_turns=None)) == 2

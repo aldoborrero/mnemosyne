@@ -41,7 +41,9 @@ from .fact_store import date_tag
 logger = logging.getLogger(__name__)
 
 # 20260505_091839_e8a4f1d2.jsonl
-_FILENAME_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_[0-9a-f]+\.jsonl$")
+_FILENAME_RE = re.compile(
+    r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_[0-9a-f]+\.jsonl$"
+)
 
 
 def _sessions_dir() -> Path:
@@ -117,7 +119,9 @@ def _iter_turns(jsonl_path: Path) -> Iterator[Tuple[int, Dict[str, Any]]]:
         logger.debug("mnemosyne.recovery: read %s failed: %s", jsonl_path, exc)
 
 
-def _pair_user_assistant(records: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+def _pair_user_assistant(
+    records: List[Dict[str, Any]],
+) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
     """Walk records and emit user→assistant pairs.
     Tool calls and other non-user/non-assistant rows are ignored. The next
     assistant after a user becomes that user's pair; orphaned users without
@@ -237,7 +241,7 @@ def replay_missed(
         records = [rec for _, rec in _iter_turns(f)]
 
         # If this is the cursor file, skip pairs we've already flushed.
-        is_cursor_file = (f.name == last_filename)
+        is_cursor_file = f.name == last_filename
         pairs = _pair_user_assistant(records)
         base = last_offset if (is_cursor_file and last_offset > 0) else 0
         pending = pairs[base:]
@@ -252,8 +256,9 @@ def replay_missed(
             if deadline is not None and time.monotonic() >= deadline:
                 return _stop(f.name, base, flushed, "stopped_at_deadline")
 
-            ok = _retain_pair(hindsight_provider, u, a, iso_date=iso,
-                              extra_tags=["recovery:true"])
+            ok = _retain_pair(
+                hindsight_provider, u, a, iso_date=iso, extra_tags=["recovery:true"]
+            )
             if not ok:
                 # Stop the whole run: advancing past a failure would leave a
                 # permanent hole in the bank, and the next pair will probably
@@ -261,7 +266,8 @@ def replay_missed(
                 logger.warning(
                     "mnemosyne.recovery: retain failed in %s at pair %d — "
                     "stopping, will resume here next startup",
-                    f.name, base + flushed,
+                    f.name,
+                    base + flushed,
                 )
                 return _stop(f.name, base, flushed, "stopped_at_failure")
 

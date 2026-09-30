@@ -73,12 +73,14 @@ def _fetch_embeddings(texts: List[str], timeout: float) -> Optional[List[List[fl
 
     Returns a list of vectors aligned with `texts`, or None on any error.
     """
-    base = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
-                          "http://localhost:8000/v1")
-    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
-                         "sk-local-litellm")
-    model = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
-                           "jina-embeddings-v5-text-small-retrieval-mlx")
+    base = os.environ.get(
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL", "http://localhost:8000/v1"
+    )
+    key = os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY", "sk-local-litellm")
+    model = os.environ.get(
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+        "jina-embeddings-v5-text-small-retrieval-mlx",
+    )
     url = base.rstrip("/") + "/embeddings"
 
     body = _json.dumps({"model": model, "input": texts}).encode("utf-8")

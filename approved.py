@@ -56,7 +56,12 @@ _READ_SCHEMA = {
     "description": "Read one memory entry in full by the viking:// URI memory_recall returned.",
     "parameters": {
         "type": "object",
-        "properties": {"uri": {"type": "string", "description": "viking:// URI from memory_recall."}},
+        "properties": {
+            "uri": {
+                "type": "string",
+                "description": "viking:// URI from memory_recall.",
+            }
+        },
         "required": ["uri"],
     },
 }
@@ -66,7 +71,9 @@ _REFLECT_SCHEMA = {
     "description": "Answer a question by reasoning over the saved memory entries.",
     "parameters": {
         "type": "object",
-        "properties": {"query": {"type": "string", "description": "Natural-language question."}},
+        "properties": {
+            "query": {"type": "string", "description": "Natural-language question."}
+        },
         "required": ["query"],
     },
 }
@@ -86,7 +93,9 @@ class ApprovedMemoryProvider(MemoryProvider):
         self._reconcile_lock = threading.Lock()
         self._reconcile_queued = False
         # One worker: reconciles run one at a time, off the agent's turn.
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mnemosyne-reconcile")
+        self._worker = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mnemosyne-reconcile"
+        )
 
     @property
     def name(self) -> str:
@@ -95,7 +104,10 @@ class ApprovedMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         if policy.approved_problem(self._policy):
             return False
-        checks = {"openviking": _openviking_configured, "hindsight": lambda: bool(_hindsight_url())}
+        checks = {
+            "openviking": _openviking_configured,
+            "hindsight": lambda: bool(_hindsight_url()),
+        }
         return all(checks[b]() for b in self._policy.backends)
 
     # -- lifecycle ---------------------------------------------------------------
@@ -123,8 +135,12 @@ class ApprovedMemoryProvider(MemoryProvider):
         if problem:
             return self._disable(problem)
         self._home = home
-        self._namespace = policy.namespace(str(kwargs.get("agent_identity") or ""), home)
-        self._writes_allowed = policy.writes_allowed(str(kwargs.get("agent_context") or ""))
+        self._namespace = policy.namespace(
+            str(kwargs.get("agent_identity") or ""), home
+        )
+        self._writes_allowed = policy.writes_allowed(
+            str(kwargs.get("agent_context") or "")
+        )
         if "openviking" in self._policy.backends:
             self._openviking = OpenVikingStore.connect(self._namespace)
         if "hindsight" in self._policy.backends:
@@ -169,17 +185,23 @@ class ApprovedMemoryProvider(MemoryProvider):
         files = memory_files.read_all(self._home)
         for target, te in files.items():
             if te.missing and self._seen_files.get(target):
-                logger.warning("mnemosyne: %s disappeared; its mirrored copies are kept. "
-                               "Run `hermes mnemosyne purge --yes` to remove them.",
-                               memory_files.TARGETS[target])
+                logger.warning(
+                    "mnemosyne: %s disappeared; its mirrored copies are kept. "
+                    "Run `hermes mnemosyne purge --yes` to remove them.",
+                    memory_files.TARGETS[target],
+                )
             self._seen_files[target] = not te.missing
         summary: Dict[str, Any] = {}
         for store in (self._openviking, self._hindsight):
             if store is None:
                 continue
             out = reconcile(store, files)
-            summary[store.name] = {"created": out.created, "deleted": out.deleted,
-                                   "kept_on_unreadable": out.kept_on_unreadable, "errors": out.errors}
+            summary[store.name] = {
+                "created": out.created,
+                "deleted": out.deleted,
+                "kept_on_unreadable": out.kept_on_unreadable,
+                "errors": out.errors,
+            }
         return summary
 
     def purge(self) -> Dict[str, Any]:
@@ -207,8 +229,13 @@ class ApprovedMemoryProvider(MemoryProvider):
 
     # -- hooks -------------------------------------------------------------------
 
-    def on_memory_write(self, action: str, target: str, content: str,
-                        metadata: Optional[Dict[str, Any]] = None) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         # The file is already written when Hermes calls this; reconcile against it.
         self._schedule_reconcile()
 
@@ -217,7 +244,9 @@ class ApprovedMemoryProvider(MemoryProvider):
         if self._home and memory_files.signature(self._home) != self._signature:
             self._schedule_reconcile()
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = ""
+    ) -> None:
         return None
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
@@ -226,7 +255,9 @@ class ApprovedMemoryProvider(MemoryProvider):
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         return ""
 
-    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+    def on_delegation(
+        self, task: str, result: str, *, child_session_id: str = "", **kwargs
+    ) -> None:
         return None
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
@@ -254,15 +285,23 @@ class ApprovedMemoryProvider(MemoryProvider):
         names = [s["name"] for s in self.get_tool_schemas()]
         if not names:
             return ""
-        lines = ["# Memory (Mnemosyne)",
-                 "Long-term memory holds the entries saved with the built-in `memory` tool. "
-                 "To store something, use that tool; it is the only way anything is kept."]
+        lines = [
+            "# Memory (Mnemosyne)",
+            "Long-term memory holds the entries saved with the built-in `memory` tool. "
+            "To store something, use that tool; it is the only way anything is kept.",
+        ]
         if "memory_recall" in names:
-            lines.append("- `memory_recall(query)` — search saved entries, including earlier sessions'.")
+            lines.append(
+                "- `memory_recall(query)` — search saved entries, including earlier sessions'."
+            )
         if "memory_read" in names:
-            lines.append("- `memory_read(uri)` — full text of an entry by the URI memory_recall returned.")
+            lines.append(
+                "- `memory_read(uri)` — full text of an entry by the URI memory_recall returned."
+            )
         if "memory_reflect" in names:
-            lines.append("- `memory_reflect(query)` — an answer reasoned over the saved entries.")
+            lines.append(
+                "- `memory_reflect(query)` — an answer reasoned over the saved entries."
+            )
         return "\n".join(lines) + "\n"
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -293,23 +332,40 @@ class ApprovedMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"{tool_name} is not available"})
         if tool_name == "memory_recall":
             lines = self._recall_lines(str(args.get("query") or "")[:1500])
-            return json.dumps({"result": "\n".join(lines) or "No matching memory entries."},
-                              ensure_ascii=False)
+            return json.dumps(
+                {"result": "\n".join(lines) or "No matching memory entries."},
+                ensure_ascii=False,
+            )
         if tool_name == "memory_read":
             uri = str(args.get("uri") or "").strip()
             if self._openviking is None or not self._openviking.owns(uri):
-                return json.dumps({"error": "that URI is outside this profile's memory"})
+                return json.dumps(
+                    {"error": "that URI is outside this profile's memory"}
+                )
             try:
-                return json.dumps({"uri": uri, "content": self._openviking.read(uri)}, ensure_ascii=False)
+                return json.dumps(
+                    {"uri": uri, "content": self._openviking.read(uri)},
+                    ensure_ascii=False,
+                )
             except Exception as exc:
-                return json.dumps({"error": f"memory_read failed: {exc}"}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": f"memory_read failed: {exc}"}, ensure_ascii=False
+                )
         if self._hindsight is None:
             return json.dumps({"error": "hindsight not available"})
         try:
-            return json.dumps({"result": self._hindsight.reflect(str(args.get("query") or "")[:1500])},
-                              ensure_ascii=False)
+            return json.dumps(
+                {
+                    "result": self._hindsight.reflect(
+                        str(args.get("query") or "")[:1500]
+                    )
+                },
+                ensure_ascii=False,
+            )
         except Exception as exc:
-            return json.dumps({"error": f"memory_reflect failed: {exc}"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": f"memory_reflect failed: {exc}"}, ensure_ascii=False
+            )
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return []

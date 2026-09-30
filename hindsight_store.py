@@ -41,10 +41,14 @@ _REQUIRED_BANK_CONFIG = {
 
 def _secret(name: str) -> str:
     try:
-        from agent.secret_scope import get_secret  # profile-scoped under a multiplexed gateway
+        from agent.secret_scope import (
+            get_secret,
+        )  # profile-scoped under a multiplexed gateway
+
         return get_secret(name, "") or ""
     except Exception:
         import os
+
         return os.environ.get(name, "")
 
 
@@ -55,8 +59,12 @@ def _thread_loop() -> None:
 
 
 def configured_url(home=None) -> str:
-    return str(config.get("hindsight_direct", "api_url", default="", home=home) or "").strip() \
+    return (
+        str(
+            config.get("hindsight_direct", "api_url", default="", home=home) or ""
+        ).strip()
         or _secret("HINDSIGHT_API_URL").strip()
+    )
 
 
 class HindsightStore:
@@ -65,24 +73,40 @@ class HindsightStore:
     def __init__(self, client: Any, bank_id: str) -> None:
         self._client = client
         self.bank_id = bank_id
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mnemosyne-hindsight",
-                                          initializer=_thread_loop)
+        self._worker = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mnemosyne-hindsight",
+            initializer=_thread_loop,
+        )
 
     @classmethod
     def connect(cls, namespace: str, home=None) -> Optional["HindsightStore"]:
         url = configured_url(home)
         if not url:
-            logger.warning("mnemosyne: hindsight_direct.api_url is not set; Hindsight backend off")
+            logger.warning(
+                "mnemosyne: hindsight_direct.api_url is not set; Hindsight backend off"
+            )
             return None
-        if is_cloud_hindsight(url) and not config.get("hindsight_direct", "allow_cloud",
-                                                      default=False, home=home):
-            logger.warning("mnemosyne: refusing Hindsight Cloud (%s) without hindsight_direct.allow_cloud", url)
+        if is_cloud_hindsight(url) and not config.get(
+            "hindsight_direct", "allow_cloud", default=False, home=home
+        ):
+            logger.warning(
+                "mnemosyne: refusing Hindsight Cloud (%s) without hindsight_direct.allow_cloud",
+                url,
+            )
             return None
         try:
             from hindsight_client import Hindsight
-            timeout = float(config.get("hindsight_direct", "timeout", default=30.0, home=home))
-            client = Hindsight(base_url=url, api_key=_secret("HINDSIGHT_API_KEY") or None,
-                               timeout=timeout, user_agent="mnemosyne")
+
+            timeout = float(
+                config.get("hindsight_direct", "timeout", default=30.0, home=home)
+            )
+            client = Hindsight(
+                base_url=url,
+                api_key=_secret("HINDSIGHT_API_KEY") or None,
+                timeout=timeout,
+                user_agent="mnemosyne",
+            )
         except Exception as exc:
             logger.warning("mnemosyne: Hindsight client unavailable: %s", exc)
             return None
@@ -90,7 +114,9 @@ class HindsightStore:
         try:
             store._configure_bank()
         except Exception as exc:
-            logger.warning("mnemosyne: Hindsight bank %s not usable: %s", store.bank_id, exc)
+            logger.warning(
+                "mnemosyne: Hindsight bank %s not usable: %s", store.bank_id, exc
+            )
             store.close()
             return None
         return store
@@ -100,14 +126,28 @@ class HindsightStore:
 
     def _configure_bank(self) -> None:
         c, bank = self._client, self.bank_id
-        self._call(lambda: c.create_bank(bank, retain_extraction_mode="chunks",
-                                         enable_observations=False))
-        self._call(lambda: c.update_bank_config(bank, retain_extraction_mode="chunks",
-                                                enable_observations=False,
-                                                enable_auto_consolidation=False,
-                                                store_document_text=True))
-        resolved = (self._call(lambda: c.get_bank_config(bank)) or {}).get("config") or {}
-        wrong = {k: resolved.get(k) for k, v in _REQUIRED_BANK_CONFIG.items() if resolved.get(k) != v}
+        self._call(
+            lambda: c.create_bank(
+                bank, retain_extraction_mode="chunks", enable_observations=False
+            )
+        )
+        self._call(
+            lambda: c.update_bank_config(
+                bank,
+                retain_extraction_mode="chunks",
+                enable_observations=False,
+                enable_auto_consolidation=False,
+                store_document_text=True,
+            )
+        )
+        resolved = (self._call(lambda: c.get_bank_config(bank)) or {}).get(
+            "config"
+        ) or {}
+        wrong = {
+            k: resolved.get(k)
+            for k, v in _REQUIRED_BANK_CONFIG.items()
+            if resolved.get(k) != v
+        }
         if wrong:
             raise RuntimeError(f"bank config not applied: {wrong}")
 
@@ -124,27 +164,43 @@ class HindsightStore:
         ids: Set[str] = set()
         offset = 0
         while True:
-            resp = self._call(lambda o=offset: asyncio.get_event_loop().run_until_complete(
-                c.documents.list_documents(bank, tags=tags, tags_match="all_strict", limit=_PAGE, offset=o)))
+            resp = self._call(
+                lambda o=offset: asyncio.get_event_loop().run_until_complete(
+                    c.documents.list_documents(
+                        bank, tags=tags, tags_match="all_strict", limit=_PAGE, offset=o
+                    )
+                )
+            )
             items = list(getattr(resp, "items", None) or [])
             for item in items:
-                doc_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", "")
+                doc_id = (
+                    item.get("id")
+                    if isinstance(item, dict)
+                    else getattr(item, "id", "")
+                )
                 if isinstance(doc_id, str) and doc_id.startswith(prefix):
-                    ids.add(doc_id[len(prefix):])
+                    ids.add(doc_id[len(prefix) :])
             if len(items) < _PAGE:
                 return ids
             offset += _PAGE
 
     def put(self, target: str, entry: str, content: str) -> None:
         c, bank = self._client, self.bank_id
-        item = {"content": content, "document_id": self._doc(target, entry), "tags": self._tags(target)}
+        item = {
+            "content": content,
+            "document_id": self._doc(target, entry),
+            "tags": self._tags(target),
+        }
         self._call(lambda: c.retain_batch(bank, items=[item]))
 
     def delete(self, target: str, entry: str) -> None:
         c, bank, doc = self._client, self.bank_id, self._doc(target, entry)
         try:
-            self._call(lambda: asyncio.get_event_loop().run_until_complete(
-                c.documents.delete_document(bank, doc)))
+            self._call(
+                lambda: asyncio.get_event_loop().run_until_complete(
+                    c.documents.delete_document(bank, doc)
+                )
+            )
         except Exception as exc:
             if getattr(exc, "status", None) != 404:
                 raise
@@ -156,14 +212,34 @@ class HindsightStore:
 
     def recall(self, query: str, *, max_tokens: int = 2048) -> List[str]:
         c, bank = self._client, self.bank_id
-        resp = self._call(lambda: c.recall(bank, query, types=["world"], max_tokens=max_tokens,
-                                           tags=[_TAG], tags_match="all_strict"))
-        return [r.text.strip() for r in (getattr(resp, "results", None) or []) if getattr(r, "text", "")]
+        resp = self._call(
+            lambda: c.recall(
+                bank,
+                query,
+                types=["world"],
+                max_tokens=max_tokens,
+                tags=[_TAG],
+                tags_match="all_strict",
+            )
+        )
+        return [
+            r.text.strip()
+            for r in (getattr(resp, "results", None) or [])
+            if getattr(r, "text", "")
+        ]
 
     def reflect(self, query: str) -> str:
         c, bank = self._client, self.bank_id
-        resp = self._call(lambda: c.reflect(bank, query, fact_types=["world"], exclude_mental_models=True,
-                                            tags=[_TAG], tags_match="all_strict"))
+        resp = self._call(
+            lambda: c.reflect(
+                bank,
+                query,
+                fact_types=["world"],
+                exclude_mental_models=True,
+                tags=[_TAG],
+                tags_match="all_strict",
+            )
+        )
         return str(getattr(resp, "text", "") or "")
 
     def close(self) -> None:

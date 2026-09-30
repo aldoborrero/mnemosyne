@@ -29,6 +29,7 @@ class TargetEntries:
     """Entries of one target. ``entries is None`` means the file could not be
     read or does not exist, which is not the same as an empty file: only a
     file that was read may drive deletions."""
+
     target: str
     entries: Optional[List[str]]
     missing: bool = False

@@ -6,6 +6,7 @@ drifts, so the user could approve list A and the system would delete list B.
 `_DriftingProvider` below reproduces exactly that — it returns a different
 result set on every call — and the tests assert the confirm step is immune.
 """
+
 from __future__ import annotations
 
 import json

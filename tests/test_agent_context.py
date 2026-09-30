@@ -4,6 +4,7 @@ Hermes passes agent_context="cron" to scheduled jobs and "subagent" to
 delegate_task children and documents that providers skip writes for them
 (agent/agent_init.py); Honcho also skips "flush".
 """
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ class _Recorder:
         def record(*args, **kwargs):
             self.events.append(name)
             return "" if name == "on_pre_compress" else json.dumps({"result": "ok"})
+
         return record
 
 
@@ -42,8 +44,11 @@ def test_non_writing_contexts_do_not_write(ctx):
     names = [s["name"] for s in p.get_tool_schemas()]
     assert "memory_conclude" not in names and "memory_forget" not in names
     assert "memory_recall" in names
-    for tool, args in (("memory_conclude", {"conclusion": "x"}), ("memory_forget", {"query": "x"}),
-                       ("memory_profile", {"card": ["x"]})):
+    for tool, args in (
+        ("memory_conclude", {"conclusion": "x"}),
+        ("memory_forget", {"query": "x"}),
+        ("memory_profile", {"card": ["x"]}),
+    ):
         assert "error" in json.loads(p.handle_tool_call(tool, args))
     assert p._honcho.events == []
 
@@ -63,7 +68,10 @@ def test_initialize_reads_agent_context(monkeypatch, tmp_path):
     spawned = []
     monkeypatch.setattr(p, "_spawn_recovery", lambda: spawned.append(True))
     import conftest
-    monkeypatch.setattr(conftest.mnemosyne, "initialize_cursor_if_missing", lambda: False)
+
+    monkeypatch.setattr(
+        conftest.mnemosyne, "initialize_cursor_if_missing", lambda: False
+    )
     p.initialize("s1", agent_context="cron", platform="cron")
     assert p._writes_allowed is False and spawned == []
     p.initialize("s2", agent_context="primary", platform="cli")

@@ -58,8 +58,12 @@ def reconcile(store: EntryStore, files: Dict[str, TargetEntries]) -> Outcome:
         desired = {entry_id(text): text for text in te.entries}
         to_delete = sorted(current - set(desired))
         if len(to_delete) > _LOUD_DELETE_COUNT:
-            logger.warning("mnemosyne: %s/%s: deleting %d entries no longer in the approved file",
-                           store.name, target, len(to_delete))
+            logger.warning(
+                "mnemosyne: %s/%s: deleting %d entries no longer in the approved file",
+                store.name,
+                target,
+                len(to_delete),
+            )
         for eid, text in desired.items():
             if eid in current:
                 continue

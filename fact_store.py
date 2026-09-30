@@ -182,13 +182,17 @@ class FactStore:
             )
             return int(count) + 1
 
-    def force_strong(self, text: str, *, source: str, level: Optional[int] = None) -> int:
+    def force_strong(
+        self, text: str, *, source: str, level: Optional[int] = None
+    ) -> int:
         """Plan item 10: user-explicit facts get max mention_count immediately."""
         key = _canonical_key(text)
         if not key:
             return 0
-        target = level if level is not None else config.get(
-            "fact_store", "user_explicit_mention_count", default=10
+        target = (
+            level
+            if level is not None
+            else config.get("fact_store", "user_explicit_mention_count", default=10)
         )
         now = today_iso()
         with self._lock, self._connect() as conn:
@@ -201,7 +205,13 @@ class FactStore:
                 conn.execute(
                     "INSERT INTO facts(canonical_key, mention_count, first_seen, last_seen, sources) "
                     "VALUES(?, ?, ?, ?, ?)",
-                    (key, int(target), now, now, json.dumps(sources, ensure_ascii=False)),
+                    (
+                        key,
+                        int(target),
+                        now,
+                        now,
+                        json.dumps(sources, ensure_ascii=False),
+                    ),
                 )
                 return int(target)
             current = int(row[0])
@@ -349,9 +359,12 @@ class FactStore:
                     conn.execute(
                         "UPDATE forgotten_signatures SET tokens=?, examples=?, "
                         "last_match_ts=? WHERE id=?",
-                        (json.dumps(new_tokens, ensure_ascii=False),
-                         json.dumps(new_examples, ensure_ascii=False),
-                         now, rid),
+                        (
+                            json.dumps(new_tokens, ensure_ascii=False),
+                            json.dumps(new_examples, ensure_ascii=False),
+                            now,
+                            rid,
+                        ),
                     )
                     return int(rid)
 
@@ -384,14 +397,16 @@ class FactStore:
                 examples = json.loads(ejson or "[]")
             except Exception:
                 examples = []
-            out.append({
-                "id": int(rid),
-                "tokens": tokens,
-                "examples": examples,
-                "query": q,
-                "created_at": cts,
-                "last_match_ts": lts,
-            })
+            out.append(
+                {
+                    "id": int(rid),
+                    "tokens": tokens,
+                    "examples": examples,
+                    "query": q,
+                    "created_at": cts,
+                    "last_match_ts": lts,
+                }
+            )
         return out
 
     def touch_signature(self, sig_id: int) -> None:
@@ -404,8 +419,9 @@ class FactStore:
                 (now, sig_id),
             )
 
-    def vacuum_signatures(self, *, max_count: int = 1000,
-                          stale_days: Optional[int] = None) -> int:
+    def vacuum_signatures(
+        self, *, max_count: int = 1000, stale_days: Optional[int] = None
+    ) -> int:
         """Drop oldest sigs over ``max_count``, plus any whose
         last_match_ts (or created_at if never matched) is older than
         ``stale_days``. Returns rows removed."""
@@ -488,8 +504,9 @@ class FactStore:
     # Tagging helpers — what we attach to Hindsight on retain.
     # ------------------------------------------------------------------
 
-    def tags_for_retain(self, *, source: Optional[str] = None,
-                        when: Optional[date] = None) -> List[str]:
+    def tags_for_retain(
+        self, *, source: Optional[str] = None, when: Optional[date] = None
+    ) -> List[str]:
         tags = [date_tag(when)]
         if source:
             tags.append(f"source:{source}")

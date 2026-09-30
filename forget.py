@@ -77,7 +77,11 @@ def forget_text(
                 "hindsight_retain",
                 {
                     "content": f"[FORGOTTEN {when}] {text}",
-                    "tags": [f"forgotten:{when}", f"supersedes:{key}", f"reason:{reason}"],
+                    "tags": [
+                        f"forgotten:{when}",
+                        f"supersedes:{key}",
+                        f"reason:{reason}",
+                    ],
                 },
             )
             tombstone_written = True
@@ -147,8 +151,7 @@ def _apply_forget(
     sig_id = 0
     if op_tokens:
         try:
-            merge = float(config.get("forget", "signature_merge_jaccard",
-                                     default=0.7))
+            merge = float(config.get("forget", "signature_merge_jaccard", default=0.7))
             sig_id = fact_store.add_signature(
                 list(op_tokens),
                 examples=chosen_texts[:5],
@@ -181,6 +184,7 @@ def _apply_forget(
     if write_ts and hindsight_provider is not None and chosen_texts:
         if async_ts:
             from . import _spawn_tombstone_writer  # late import — set in __init__.py
+
             _spawn_tombstone_writer(hindsight_provider, chosen_texts, audit_now)
         else:
             for text in chosen_texts:
@@ -190,8 +194,13 @@ def _apply_forget(
         "forgotten": audit_entries,
         "ts": audit_now,
         "signature_id": sig_id,
-        "tombstones": ("queued" if (write_ts and async_ts)
-                       else "written" if write_ts else "skipped"),
+        "tombstones": (
+            "queued"
+            if (write_ts and async_ts)
+            else "written"
+            if write_ts
+            else "skipped"
+        ),
     }
 
 
@@ -355,7 +364,7 @@ def forget_by_query(
         "instructions": (
             "DRY-RUN. Show these candidates to the user verbatim, get explicit "
             "confirmation, then re-invoke memory_forget with confirmed=true AND "
-            f"preview_token=\"{token}\" (optionally indices=[1,3,...] to pick a "
+            f'preview_token="{token}" (optionally indices=[1,3,...] to pick a '
             "subset). The confirm step applies exactly this list — it does not "
             "search again. Without confirmed=true nothing is forgotten."
         ),

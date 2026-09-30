@@ -34,10 +34,14 @@ _NO_WRITE_CONTEXTS = ("cron", "subagent", "flush")
 
 
 def ingest_mode(home: Optional[Path] = None) -> str:
-    mode = str(config.get("ingest", "mode", default=INGEST_TURNS, home=home) or "").strip()
+    mode = str(
+        config.get("ingest", "mode", default=INGEST_TURNS, home=home) or ""
+    ).strip()
     if mode in (INGEST_TURNS, INGEST_APPROVED_WRITES):
         return mode
-    logger.warning("mnemosyne: unknown ingest.mode %r — using %s", mode, INGEST_APPROVED_WRITES)
+    logger.warning(
+        "mnemosyne: unknown ingest.mode %r — using %s", mode, INGEST_APPROVED_WRITES
+    )
     return INGEST_APPROVED_WRITES
 
 
@@ -48,6 +52,7 @@ def approved_writes_only(home: Optional[Path] = None) -> bool:
 @dataclass(frozen=True)
 class ApprovedPolicy:
     """Approved-writes settings, read once per provider."""
+
     backends: Tuple[str, ...]
     rejected_backends: Tuple[str, ...]
     prefetch: bool
@@ -76,8 +81,10 @@ def approved_policy(home: Optional[Path] = None) -> ApprovedPolicy:
 def approved_problem(p: ApprovedPolicy) -> Optional[str]:
     """Why the approved-writes provider cannot run with these settings, or None."""
     if p.rejected_backends:
-        return (f"approved.backends lists {', '.join(p.rejected_backends)}; only "
-                f"{', '.join(APPROVED_BACKENDS)} can be limited to approved entries")
+        return (
+            f"approved.backends lists {', '.join(p.rejected_backends)}; only "
+            f"{', '.join(APPROVED_BACKENDS)} can be limited to approved entries"
+        )
     if not p.backends:
         return "approved.backends is empty"
     return None
@@ -105,7 +112,9 @@ def is_cloud_hindsight(url: str) -> bool:
 def describe() -> List[str]:
     """Human-readable summary of the approved policy, for `hermes mnemosyne status`."""
     p = approved_policy()
-    return [f"ingest.mode:         {ingest_mode()}",
-            f"approved.backends:   {', '.join(p.backends) or '-'}",
-            f"approved.prefetch:   {p.prefetch}",
-            f"approved.reflect:    {p.reflect}"]
+    return [
+        f"ingest.mode:         {ingest_mode()}",
+        f"approved.backends:   {', '.join(p.backends) or '-'}",
+        f"approved.prefetch:   {p.prefetch}",
+        f"approved.reflect:    {p.reflect}",
+    ]
